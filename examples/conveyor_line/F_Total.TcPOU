@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="F_Total">
+    <Declaration><![CDATA[
+FUNCTION F_Total : UDINT
+VAR_IN_OUT
+    counts : ARRAY[*] OF UDINT;
+END_VAR
+VAR
+    i : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[
+F_Total := 0;
+FOR i := LOWER_BOUND(counts, 1) TO UPPER_BOUND(counts, 1) DO
+    F_Total := F_Total + counts[i];
+END_FOR;
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="MAIN">
+    <Declaration><![CDATA[
+PROGRAM MAIN
+VAR
+    requested : BOOL;
+    startup : TON;
+    productEdge : R_TRIG;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[
+(* Stop/interlock overrides the start command. *)
+IF GVL_IO.stop OR NOT GVL_IO.guardClosed THEN
+    requested := FALSE;
+ELSIF GVL_IO.start THEN
+    requested := TRUE;
+END_IF;
+
+startup(IN := requested, PT := GVL_Config.startDelay);
+GVL_IO.motorRunning := startup.Q;
+
+(* Sample the sensor even when stopped, count new edges only while running. *)
+productEdge(CLK := GVL_IO.productSensor);
+IF GVL_IO.resetCount THEN
+    GVL_IO.productCount := 0;
+ELSIF GVL_IO.motorRunning AND productEdge.Q THEN
+    GVL_IO.productCount := GVL_IO.productCount + 1;
+END_IF;
+
+IF NOT GVL_IO.guardClosed THEN
+    GVL_IO.alarm := 'Guard open';
+ELSIF GVL_IO.stop THEN
+    GVL_IO.alarm := 'Stopped';
+ELSIF requested AND NOT GVL_IO.motorRunning THEN
+    GVL_IO.alarm := 'Starting';
+ELSE
+    GVL_IO.alarm := '';
+END_IF;
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_ConveyorProperties">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_ConveyorProperties
+VAR
+    requested : BOOL;
+    runningState : BOOL;
+    resetStartup : BOOL;
+    configuredDelay : TIME := T#1s;
+    speed : LREAL := 0.5;
+    count : UDINT;
+    alarmText : STRING(80);
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[(* The program invokes methods explicitly. *)
+]]></ST></Implementation>
+    <Method Name="Start">
+      <Declaration><![CDATA[METHOD PUBLIC Start
+VAR_INPUT
+    delay : TIME := T#1s;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[THIS^.configuredDelay := delay;
+THIS^.requested := TRUE;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Stop">
+      <Declaration><![CDATA[METHOD PUBLIC Stop
+]]></Declaration>
+      <Implementation><ST><![CDATA[THIS^.requested := FALSE;
+THIS^.runningState := FALSE;
+THIS^.resetStartup := TRUE;
+THIS^.alarmText := 'Stopped';
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Reset">
+      <Declaration><![CDATA[METHOD PUBLIC Reset
+]]></Declaration>
+      <Implementation><ST><![CDATA[THIS^.count := 0;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Update">
+      <Declaration><![CDATA[METHOD PUBLIC Update : UDINT
+VAR_INPUT
+    guardClosed : BOOL;
+    stopRequested : BOOL := FALSE;
+    sensor : BOOL := FALSE;
+END_VAR
+VAR_INST
+    startup : TON;
+    productEdge : R_TRIG;
+    updates : UDINT;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[(* All three VAR_INST variables belong to this conveyor and this method. *)
+updates := updates + 1;
+IF stopRequested OR NOT guardClosed THEN
+    THIS^.Stop();
+END_IF;
+IF THIS^.resetStartup THEN
+    startup(IN := FALSE, PT := THIS^.configuredDelay);
+    THIS^.resetStartup := FALSE;
+END_IF;
+startup(IN := THIS^.requested, PT := THIS^.configuredDelay);
+THIS^.runningState := startup.Q;
+(* Sample while stopped too, so restart cannot manufacture an edge. *)
+productEdge(CLK := sensor);
+IF THIS^.runningState AND productEdge.Q THEN
+    THIS^.count := THIS^.count + 1;
+END_IF;
+IF NOT guardClosed THEN
+    THIS^.alarmText := 'Guard open';
+ELSIF stopRequested THEN
+    THIS^.alarmText := 'Stopped';
+ELSIF THIS^.requested AND NOT THIS^.runningState THEN
+    THIS^.alarmText := 'Starting';
+ELSE
+    THIS^.alarmText := '';
+END_IF;
+Update := updates;
+]]></ST></Implementation>
+    </Method>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY PUBLIC SpeedSetpoint : LREAL
+]]></Declaration>
+      <Get>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[SpeedSetpoint := THIS^.speed;
+]]></ST></Implementation>
+      </Get>
+      <Set>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[(* The assigned property value is available in the local SpeedSetpoint slot. *)
+IF SpeedSetpoint < 0.0 THEN
+    THIS^.speed := 0.0;
+ELSIF SpeedSetpoint > 1.0 THEN
+    THIS^.speed := 1.0;
+ELSE
+    THIS^.speed := SpeedSetpoint;
+END_IF;
+]]></ST></Implementation>
+      </Set>
+    </Property>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY PUBLIC Running : BOOL
+]]></Declaration>
+      <Get>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[Running := THIS^.runningState;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="ActiveSpeed">
+      <Declaration><![CDATA[PROPERTY PUBLIC ActiveSpeed : LREAL
+]]></Declaration>
+      <Get>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[IF THIS^.Running THEN
+    ActiveSpeed := THIS^.SpeedSetpoint;
+ELSE
+    ActiveSpeed := 0.0;
+END_IF;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="ProductCount">
+      <Declaration><![CDATA[PROPERTY PUBLIC ProductCount : UDINT
+]]></Declaration>
+      <Get>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[ProductCount := THIS^.count;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="Alarm">
+      <Declaration><![CDATA[PROPERTY PUBLIC Alarm : STRING(80)
+]]></Declaration>
+      <Get>
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[Alarm := THIS^.alarmText;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

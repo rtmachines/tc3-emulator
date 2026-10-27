@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.0">
+  <POU Name="FB_Counter" Id="{0342b13c-6f0c-4a32-a6b9-44604cf44317}">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Counter
+VAR_INPUT
+    enable : BOOL;
+END_VAR
+VAR_OUTPUT
+    count : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[IF enable THEN
+    count := count + 1;
+END_IF;
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>

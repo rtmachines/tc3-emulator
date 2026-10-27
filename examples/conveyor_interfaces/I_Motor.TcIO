@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <Itf Name="I_Motor">
+    <Declaration><![CDATA[INTERFACE I_Motor]]></Declaration>
+    <Method Name="Update">
+      <Declaration><![CDATA[METHOD Update
+VAR_INPUT
+    run : BOOL;
+    delay : TIME;
+END_VAR
+]]></Declaration>
+    </Method>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY SpeedSetpoint : LREAL]]></Declaration>
+      <Get Name="Get"><Declaration><![CDATA[]]></Declaration></Get>
+      <Set Name="Set"><Declaration><![CDATA[]]></Declaration></Set>
+    </Property>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY Running : BOOL]]></Declaration>
+      <Get Name="Get"><Declaration><![CDATA[]]></Declaration></Get>
+    </Property>
+    <Property Name="Faulted">
+      <Declaration><![CDATA[PROPERTY Faulted : BOOL]]></Declaration>
+      <Get Name="Get"><Declaration><![CDATA[]]></Declaration></Get>
+    </Property>
+    <Property Name="ActualSpeed">
+      <Declaration><![CDATA[PROPERTY ActualSpeed : LREAL]]></Declaration>
+      <Get Name="Get"><Declaration><![CDATA[]]></Declaration></Get>
+    </Property>
+  </Itf>
+</TcPlcObject>

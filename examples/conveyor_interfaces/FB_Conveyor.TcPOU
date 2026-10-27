@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_Conveyor">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Conveyor
+VAR
+    motor : I_Motor;
+    requested : BOOL;
+    configuredDelay : TIME := T#100ms;
+    speed : LREAL := 0.5;
+    count : UDINT;
+    alarmText : STRING(80);
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[(* Methods control the dependency explicitly. *)
+]]></ST></Implementation>
+    <Method Name="BindMotor">
+      <Declaration><![CDATA[METHOD PUBLIC BindMotor
+VAR_INPUT
+    motor : I_Motor;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[(* Stop the old dependency before replacing it; a new Start is required. *)
+IF THIS^.motor <> 0 THEN
+    THIS^.motor.Update(run := FALSE, delay := configuredDelay);
+END_IF;
+THIS^.motor := motor;
+requested := FALSE;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Start">
+      <Declaration><![CDATA[METHOD PUBLIC Start
+VAR_INPUT
+    delay : TIME := T#100ms;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[configuredDelay := delay;
+requested := TRUE;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Stop">
+      <Declaration><![CDATA[METHOD PUBLIC Stop
+]]></Declaration>
+      <Implementation><ST><![CDATA[requested := FALSE;
+IF motor <> 0 THEN
+    motor.Update(run := FALSE, delay := configuredDelay);
+END_IF;
+alarmText := 'Stopped';
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Update">
+      <Declaration><![CDATA[METHOD PUBLIC Update
+VAR_INPUT
+    guardClosed : BOOL;
+    stopRequested : BOOL := FALSE;
+    sensor : BOOL := FALSE;
+END_VAR
+VAR_INST
+    productEdge : R_TRIG;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[productEdge(CLK := sensor);
+IF motor = 0 THEN
+    requested := FALSE;
+    alarmText := 'Motor not bound';
+    RETURN;
+END_IF;
+IF stopRequested OR NOT guardClosed OR motor.Faulted THEN
+    requested := FALSE;
+END_IF;
+motor.SpeedSetpoint := speed;
+motor.Update(run := requested, delay := configuredDelay);
+IF motor.Running AND productEdge.Q THEN
+    count := count + 1;
+END_IF;
+IF NOT guardClosed THEN
+    alarmText := 'Guard open';
+ELSIF stopRequested THEN
+    alarmText := 'Stopped';
+ELSIF motor.Faulted THEN
+    alarmText := 'Motor fault';
+ELSIF requested AND NOT motor.Running THEN
+    alarmText := 'Starting';
+ELSE
+    alarmText := '';
+END_IF;
+]]></ST></Implementation>
+    </Method>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY PUBLIC SpeedSetpoint : LREAL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[SpeedSetpoint := THIS^.speed;
+]]></ST></Implementation>
+      </Get>
+      <Set Name="Set">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[THIS^.speed := LIMIT(0.0, SpeedSetpoint, 1.0);
+]]></ST></Implementation>
+      </Set>
+    </Property>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY PUBLIC Running : BOOL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[IF motor <> 0 THEN
+    Running := motor.Running;
+END_IF;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="ActiveSpeed">
+      <Declaration><![CDATA[PROPERTY PUBLIC ActiveSpeed : LREAL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[IF motor <> 0 THEN
+    ActiveSpeed := motor.ActualSpeed;
+END_IF;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="ProductCount">
+      <Declaration><![CDATA[PROPERTY PUBLIC ProductCount : UDINT
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[ProductCount := count;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+    <Property Name="Alarm">
+      <Declaration><![CDATA[PROPERTY PUBLIC Alarm : STRING(80)
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[Alarm := alarmText;
+]]></ST></Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

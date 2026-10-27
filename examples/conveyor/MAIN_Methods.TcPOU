@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="MAIN_Methods">
+    <Declaration><![CDATA[
+PROGRAM MAIN_Methods
+VAR
+    controller : FB_Conveyor;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[
+IF GVL_IO.start THEN
+    controller.Start(delay := GVL_Config.startDelay);
+END_IF;
+controller.Update(guardClosed := GVL_IO.guardClosed,
+                  stopRequested := GVL_IO.stop,
+                  sensor := GVL_IO.productSensor);
+IF GVL_IO.resetCount THEN
+    controller.Reset();
+END_IF;
+GVL_IO.motorRunning := controller.IsRunning();
+GVL_IO.productCount := controller.productCount;
+GVL_IO.alarm := controller.alarm;
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,4 @@
+include README.md
+recursive-include examples *.st *.TcPOU *.TcDUT *.TcGVL *.TcIO *.py
+recursive-include tests *.py
+recursive-include docs *.md

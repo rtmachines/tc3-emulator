@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_Conveyor">
+    <Declaration><![CDATA[
+FUNCTION_BLOCK FB_Conveyor
+VAR_OUTPUT
+    motorRunning : BOOL;
+    productCount : UDINT;
+    alarm : STRING(80);
+END_VAR
+VAR
+    requested : BOOL;
+    configuredDelay : TIME := T#1s;
+    startup : TON;
+    productEdge : R_TRIG;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[
+(* Invoke public methods explicitly. *)
+]]></ST></Implementation>
+    <Method Name="Start">
+      <Declaration><![CDATA[
+METHOD PUBLIC Start
+VAR_INPUT
+    delay : TIME := T#1s;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+configuredDelay := delay;
+requested := TRUE;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Stop">
+      <Declaration><![CDATA[
+METHOD PUBLIC Stop
+
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+requested := FALSE;
+startup(IN := FALSE, PT := configuredDelay);
+motorRunning := FALSE;
+alarm := 'Stopped';
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Reset">
+      <Declaration><![CDATA[
+METHOD PUBLIC Reset
+
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+(* Reset the count while preserving the run command and sampled sensor edge. *)
+productCount := 0;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="Update">
+      <Declaration><![CDATA[
+METHOD PUBLIC Update
+VAR_INPUT
+    guardClosed : BOOL;
+    stopRequested : BOOL := FALSE;
+    sensor : BOOL := FALSE;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+(* Interlocks win even if Start was called earlier in this scan. *)
+IF stopRequested OR NOT guardClosed THEN
+    Stop();
+END_IF;
+startup(IN := requested, PT := configuredDelay);
+motorRunning := startup.Q;
+CountProduct(sensor := sensor);
+IF NOT guardClosed THEN
+    alarm := 'Guard open';
+ELSIF stopRequested THEN
+    alarm := 'Stopped';
+ELSIF requested AND NOT motorRunning THEN
+    alarm := 'Starting';
+ELSE
+    alarm := '';
+END_IF;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="IsRunning">
+      <Declaration><![CDATA[
+METHOD PUBLIC IsRunning : BOOL
+
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+IsRunning := motorRunning;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="CountProduct">
+      <Declaration><![CDATA[
+METHOD PRIVATE CountProduct
+VAR_INPUT
+    sensor : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[
+(* Sampling also while stopped prevents a stale edge on restart. *)
+productEdge(CLK := sensor);
+IF motorRunning AND productEdge.Q THEN
+    productCount := productCount + 1;
+END_IF;
+]]></ST></Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

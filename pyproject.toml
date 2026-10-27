@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tc-emulator"
+version = "0.12.0"
+description = "A standalone checked-subset Structured Text interpreter for Python tests"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.9", "build>=1"]
+
+[tool.setuptools.packages.find]
+include = ["tc_emulator*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests", "examples"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [".work", ".code-review-graph", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

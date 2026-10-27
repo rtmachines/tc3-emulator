@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="MAIN_Line">
+    <Declaration><![CDATA[
+PROGRAM MAIN_Line
+VAR
+    conveyors : ARRAY[1..3] OF FB_Conveyor;
+    i : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[
+FOR i := LOWER_BOUND(conveyors, 1) TO UPPER_BOUND(conveyors, 1) DO
+    IF GVL_Line.start[i] THEN
+        conveyors[i].Start(delay := GVL_Line.startDelay[i]);
+    END_IF;
+    conveyors[i].Update(guardClosed := GVL_Line.guardClosed[i],
+                        stopRequested := GVL_Line.stop[i],
+                        sensor := GVL_Line.productSensor[i]);
+    IF GVL_Line.resetCount[i] THEN
+        conveyors[i].Reset();
+    END_IF;
+    GVL_Line.motorRunning[i] := conveyors[i].IsRunning();
+    GVL_Line.productCount[i] := conveyors[i].productCount;
+    GVL_Line.alarm[i] := conveyors[i].alarm;
+END_FOR;
+GVL_Line.totalCount := F_Total(counts := GVL_Line.productCount);
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

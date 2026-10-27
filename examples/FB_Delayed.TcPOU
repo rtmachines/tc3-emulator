@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1">
+  <POU Name="FB_Delayed">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Delayed
+VAR_INPUT
+    enable : BOOL;
+    delay : TIME := T#1s;
+END_VAR
+VAR_OUTPUT
+    ready : BOOL;
+    elapsed : TIME;
+END_VAR
+VAR
+    delayTimer : TON;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[delayTimer(IN := enable, PT := delay, Q => ready, ET => elapsed);
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>
