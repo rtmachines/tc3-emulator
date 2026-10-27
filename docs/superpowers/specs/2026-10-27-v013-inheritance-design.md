@@ -35,6 +35,9 @@ Do not silently accept unsupported syntax. No runtime dependencies or hardware a
   TwinCAT's exception allowing a derived declaration to shadow base VAR_TEMP must
   retain distinct activation storage and lexical access if implemented; otherwise
   explicitly reject and document this bounded profile, never silently alias them.
+  Initial profile: reject that shadowing exception. VAR_TEMP names remain reserved
+  against shadowing, but each declaration is visible only in its declaring FB body
+  activation, not in descendant bodies or methods/accessors.
 - Override methods with matching formal names/order/directions/resolved types,
   result type, access, and normalized default/requiredness contract. Local variables
   and implementation may differ. Canonical aliases retain existing equivalence.

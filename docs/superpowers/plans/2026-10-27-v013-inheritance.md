@@ -32,11 +32,11 @@
 
 **Interfaces:** append Pou.extends: str | None = None; add frozen Super(loc: Location) to LValue and Expr. SUPER^() is Call(Super(...), ...); SUPER^.member is Member(Super(...), name, ...). Existing access strings gain PROTECTED. Members retain original owner/qualified names.
 
-- [ ] Add parsing tests for EXTENDS with IMPLEMENTS, forward base names, SUPER body/method/property/field syntax and PROTECTED methods/properties/accessors. Assert AST meaning and locations, not parser internals.
-- [ ] Add native TcPOU load tests using these constructs, including source locations and rejected non-FB/multiple bases, malformed modifiers, unsupported interface inheritance and declaration injection.
-- [ ] Run .venv/bin/python -m pytest tests/test_parser_inheritance.py tests/test_loader_inheritance.py -q; record expected missing-feature failures.
-- [ ] Implement syntax/parser/import support and preserve existing AST constructors and strict XML boundaries.
-- [ ] Run new and existing parser/loader tests, full suite, Ruff/format on changed files; record results and commit only Task 1 files.
+- [x] Add parsing tests for EXTENDS with IMPLEMENTS, forward base names, SUPER body/method/property/field syntax and PROTECTED methods/properties/accessors. Assert AST meaning and locations, not parser internals.
+- [x] Add native TcPOU load tests using these constructs, including source locations and rejected non-FB/multiple bases, malformed modifiers, unsupported interface inheritance and declaration injection.
+- [x] Run .venv/bin/python -m pytest tests/test_parser_inheritance.py tests/test_loader_inheritance.py -q; record expected missing-feature failures.
+- [x] Implement syntax/parser/import support and preserve existing AST constructors and strict XML boundaries.
+- [x] Run new and existing parser/loader tests, full suite, Ruff/format on changed files; record results and commit only Task 1 files.
 
 ## Task 2: Inheritance resolution, execution and Python integration
 
@@ -44,12 +44,12 @@
 
 **Interfaces:** consumes Task 1 AST. Produces effective inherited contracts and runtime dispatch behind existing Runtime/FBHandle public APIs; exact internal Registry/frame metadata is owned by this task and must be documented in its report. Declaring Pou.name/owner and receiver identity remain stable.
 
-- [ ] Write and run failing tests for forward/multilevel bases, unknown/non-FB/builtin/cyclic bases, inherited variables/defaults/member collisions and access checks. Decide and document VAR_TEMP shadow profile before implementation.
-- [ ] Resolve inheritance and effective contracts without rebinding lexical constants/types. Reject incompatible method/default/property/accessor overrides and private overrides. Inherit implemented interfaces and register concrete implementers.
-- [ ] Write and run failing tests for derived body vs explicit SUPER^(), base/THIS/interface virtual dispatch, lexical grandparent SUPER, inherited GET/SET and Python public/private/protected access.
-- [ ] Implement invocation/storage metadata and dispatch, with one receiver, inherited initialized storage, static SUPER selection, independent VAR_INST banks and transient VAR_TEMP activations. Preserve checked context, input/output/IN_OUT and Python prevalidation.
-- [ ] Add the five Review Focus tests plus independent instances/FB arrays, inherited timer progression, inspection, memory/containment/recursion limits, fault propagation, invalid syntax/AST and Python wrong-runtime interface input tests. Watch each missing behavior fail before fixing it.
-- [ ] Run .venv/bin/python -m pytest -q, Ruff through local reviewdog and format; self-review against spec and commit Task 2 files. Report narrower profiles and exact test evidence.
+- [x] Write and run failing tests for forward/multilevel bases, unknown/non-FB/builtin/cyclic bases, inherited variables/defaults/member collisions and access checks. Decide and document VAR_TEMP shadow profile before implementation.
+- [x] Resolve inheritance and effective contracts without rebinding lexical constants/types. Reject incompatible method/default/property/accessor overrides and private overrides. Inherit implemented interfaces and register concrete implementers.
+- [x] Write and run failing tests for derived body vs explicit SUPER^(), base/THIS/interface virtual dispatch, lexical grandparent SUPER, inherited GET/SET and Python public/private/protected access.
+- [x] Implement invocation/storage metadata and dispatch, with one receiver, inherited initialized storage, static SUPER selection, independent VAR_INST banks and transient VAR_TEMP activations. Preserve checked context, input/output/IN_OUT and Python prevalidation.
+- [x] Add the five Review Focus tests plus independent instances/FB arrays, inherited timer progression, inspection, memory/containment/recursion limits, fault propagation, invalid syntax/AST and Python wrong-runtime interface input tests. Watch each missing behavior fail before fixing it.
+- [x] Run .venv/bin/python -m pytest -q, Ruff through local reviewdog and format; self-review against spec and commit Task 2 files. Report narrower profiles and exact test evidence.
 
 ## Task 3: Conveyor example, documentation and release
 
@@ -57,8 +57,8 @@
 
 **Interfaces:** existing Runtime.from_files/scan/advance_time/instantiate/program_fb and FBHandle.call_method/get_property/set_property/set_input. Example uses inherited I_Motor contract and virtual delays of 100/250/500 ms.
 
-- [ ] Write integration tests asserting three independent startup delays, dynamic overridden hook, fake substitution for conveyor 2, fault isolation and explicit restart, inherited property access and private/protected rejection. Run against absent/incomplete example to establish failures.
-- [ ] Implement native files: shared motor state/properties/timer in FB_MotorBase IMPLEMENTS I_Motor; derived FB_MotorSim and FB_MotorFake; three-conveyor PROGRAM/GVL. Keep previous examples intact.
-- [ ] Add Polish README explanation, runnable Python example and scope/limitations; bump version and verify the snippet.
-- [ ] Run full pytest, raw Ruff through reviewdog (flake8 parser, nofilter), format check, git diff --check; build wheel/sdist and run examples from installed wheel in isolated Python 3.11.
+- [x] Write integration tests asserting three independent startup delays, dynamic overridden hook, fake substitution for conveyor 2, fault isolation and explicit restart, inherited property access and private/protected rejection. Run against absent/incomplete example to establish failures.
+- [x] Implement native files: shared motor state/properties/timer in FB_MotorBase IMPLEMENTS I_Motor; derived FB_MotorSim and FB_MotorFake; three-conveyor PROGRAM/GVL. Keep previous examples intact.
+- [x] Add Polish README explanation, runnable Python example and scope/limitations; bump version and verify the snippet.
+- [x] Run full pytest, raw Ruff through reviewdog (flake8 parser, nofilter), format check, git diff --check; build wheel/sdist and run examples from installed wheel in isolated Python 3.11.
 - [ ] Commit Task 3, perform independent whole-branch review and fix verified findings with regression tests; record final commands/results and complete checkboxes.
