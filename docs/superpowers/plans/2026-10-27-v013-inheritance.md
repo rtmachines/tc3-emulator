@@ -1,6 +1,6 @@
 # v0.13 FB inheritance implementation plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Execute inherited TwinCAT ST function blocks with SUPER, protected members and existing interface/Python APIs.
 
@@ -61,4 +61,13 @@
 - [x] Implement native files: shared motor state/properties/timer in FB_MotorBase IMPLEMENTS I_Motor; derived FB_MotorSim and FB_MotorFake; three-conveyor PROGRAM/GVL. Keep previous examples intact.
 - [x] Add Polish README explanation, runnable Python example and scope/limitations; bump version and verify the snippet.
 - [x] Run full pytest, raw Ruff through reviewdog (flake8 parser, nofilter), format check, git diff --check; build wheel/sdist and run examples from installed wheel in isolated Python 3.11.
-- [ ] Commit Task 3, perform independent whole-branch review and fix verified findings with regression tests; record final commands/results and complete checkboxes.
+- [x] Commit Task 3, perform independent whole-branch review and fix verified findings with regression tests; record final commands/results and complete checkboxes.
+
+## Completed verification
+
+- Full source suite: 2672 passed on Python 3.13.17.
+- Installed wheel outside checkout import path: 2672 passed on Python 3.11.17; README v0.13 example also passed.
+- Full Ruff through local reviewdog passed; 85 Python files formatted; git diff --check clean.
+- Independent final review covered all 24 changed files and accepted the complete release. A discovered SUPER/VAR_IN_OUT rebinding defect was fixed with two regression tests and independently re-reviewed. No remaining findings.
+- Wheel and installed package have 15 modules matching source; sdist includes all changed sources, tests, docs and native conveyor files.
+- Scope remains the checked emulator profile, including lexical-body-only VAR_TEMP and no inherited name shadowing. Native TwinCAT differential tests were not available.
