@@ -441,3 +441,103 @@ def test_enum_reference_binding_preserves_nominal_values():
     cell = rt.cell("Mode", "Idle")
     assert rt.call("Change", ref=cell).value.name == "RUN"
     assert cell.value.type_name == "MODE"
+
+
+@pytest.mark.parametrize("local_type", ["INT", "DINT"])
+@pytest.mark.parametrize("accessor", ["GET", "SET"])
+def test_property_header_reference_initializer_ignores_accessor_shadow(local_type, accessor):
+    rt = Runtime.from_source(f"""
+    FUNCTION_BLOCK B VAR x : INT := 7; END_VAR
+    PROPERTY P : INT
+    VAR r : REFERENCE TO INT := x; END_VAR
+    GET VAR x : {local_type} := 99; END_VAR P := r; END_GET
+    SET VAR x : {local_type} := 99; END_VAR r := P; END_SET
+    END_PROPERTY
+    METHOD Read : INT Read := x; END_METHOD
+    END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    if accessor == "GET":
+        assert fb.get_property("P") == 7
+    else:
+        fb.set_property("P", 42)
+        assert fb.call_method("Read").value == 42
+
+
+def test_accessor_local_reference_initializers_keep_their_own_scope():
+    rt = Runtime.from_source("""
+    FUNCTION_BLOCK B VAR x : INT := 7; END_VAR
+    VAR_OUTPUT localSeen : INT; END_VAR
+    PROPERTY P : INT
+    GET VAR x : INT := 99; r : REFERENCE TO INT := x; END_VAR P := r; END_GET
+    SET VAR x : INT := 99; r : REFERENCE TO INT := x; END_VAR r := P; localSeen := x; END_SET
+    END_PROPERTY
+    METHOD Read : INT Read := x; END_METHOD
+    END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    assert fb.get_property("P") == 99
+    fb.set_property("P", 42)
+    assert fb.output("localSeen") == 42
+    assert fb.call_method("Read").value == 7
+
+
+def test_property_header_reference_uses_header_storage_and_index_scope():
+    rt = Runtime.from_source("""
+    TYPE S : STRUCT items : ARRAY[1..2] OF INT; END_STRUCT END_TYPE
+    FUNCTION_BLOCK B VAR CONSTANT idx : INT := 1; END_VAR
+    VAR_OUTPUT seen : INT; END_VAR
+    PROPERTY P : INT
+    VAR header : S := (items := [3, 7]); r : REFERENCE TO INT := header.items[idx]; END_VAR
+    GET VAR CONSTANT idx : INT := 2; END_VAR P := r; END_GET
+    SET VAR CONSTANT idx : INT := 2; END_VAR r := P; seen := header.items[1]; END_SET
+    END_PROPERTY
+    END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    assert fb.get_property("P") == 3
+    fb.set_property("P", 42)
+    assert fb.output("seen") == 42
+
+
+@pytest.mark.parametrize("constant_scope", ["owner", "global"])
+def test_var_inst_reference_index_ignores_method_local_constant_shadow(constant_scope):
+    owner = "VAR CONSTANT idx : INT := 1; END_VAR" if constant_scope == "owner" else ""
+    global_ = "VAR_GLOBAL CONSTANT idx : INT := 1; END_VAR" if constant_scope == "global" else ""
+    rt = Runtime.from_source(f"""
+    {global_}
+    FUNCTION_BLOCK B {owner}
+    METHOD Read : INT
+    VAR CONSTANT idx : BOOL := TRUE; END_VAR
+    VAR_INST data : ARRAY[1..2] OF INT := [3,7]; r : REFERENCE TO INT := data[idx]; END_VAR
+    Read := r;
+    END_METHOD END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    assert fb.call_method("Read").value == 3
+
+
+def test_var_inst_reference_index_is_not_relooked_up_in_persistent_method_storage():
+    rt = Runtime.from_source("""
+    VAR_GLOBAL CONSTANT idx : INT := 2; END_VAR
+    FUNCTION_BLOCK B METHOD Read : INT
+    VAR_INST idx : INT := 1; data : ARRAY[1..2] OF INT := [3,7];
+    r : REFERENCE TO INT := data[idx]; END_VAR
+    Read := r; idx := 2;
+    END_METHOD END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    assert fb.call_method("Read").value == 7
+    assert fb.call_method("Read").value == 7
+
+
+def test_var_inst_and_local_reference_targets_use_their_distinct_scopes():
+    rt = Runtime.from_source("""
+    FUNCTION_BLOCK B VAR x : INT := 7; END_VAR
+    METHOD Read : INT
+    VAR x : INT := 99; localRef : REFERENCE TO INT := x; END_VAR
+    VAR_INST persistentRef : REFERENCE TO INT := x; END_VAR
+    Read := persistentRef + localRef;
+    END_METHOD END_FUNCTION_BLOCK
+    """)
+    assert rt.instantiate("B").call_method("Read").value == 106

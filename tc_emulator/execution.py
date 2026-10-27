@@ -221,7 +221,15 @@ class Engine:
                 and decl.name not in supplied
             ):
                 slot = self.resolve(st.Reference((decl.name,), decl.loc), frame, ctx)
-                slot.bind(self.reference_value(decl.initial, frame, ctx), decl.loc)
+                initial, visible = self.registry.reference_initializers[frame.pou.name, decl.name]
+                # Reuse live cells through the declaration's validated view of locals.
+                scope = Frame(
+                    frame.pou,
+                    {name: value for name, value in frame.slots.items() if name in visible},
+                    lifetime=frame.lifetime,
+                    method_owner=frame.method_owner,
+                )
+                slot.bind(self.reference_value(initial, scope, ctx), decl.loc)
 
     def reference_value(
         self, expr: st.Expr, frame: Frame, ctx: Context | None = None

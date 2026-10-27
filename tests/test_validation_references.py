@@ -130,3 +130,43 @@ def test_var_inst_initializer_cannot_capture_method_result_storage():
         VAR_INST ref : REFERENCE TO INT := M; END_VAR
         END_METHOD END_FUNCTION_BLOCK
         """)
+
+
+def test_property_header_reference_initializer_cannot_see_accessor_only_target():
+    with pytest.raises(ValidationError, match="Unknown reference"):
+        Runtime.from_source("""
+        FUNCTION_BLOCK B PROPERTY P : INT
+        VAR r : REFERENCE TO INT := x; END_VAR
+        GET VAR x : INT := 99; END_VAR P := r; END_GET
+        END_PROPERTY END_FUNCTION_BLOCK
+        """)
+
+
+def test_var_inst_reference_initializer_index_cannot_use_method_only_constant():
+    with pytest.raises(ValidationError, match="constant|reference"):
+        Runtime.from_source("""
+        FUNCTION_BLOCK B METHOD Read : INT
+        VAR CONSTANT idx : INT := 2; END_VAR
+        VAR_INST data : ARRAY[1..2] OF INT := [3,7]; r : REFERENCE TO INT := data[idx]; END_VAR
+        Read := r;
+        END_METHOD END_FUNCTION_BLOCK
+        """)
+
+
+@pytest.mark.parametrize(
+    "owner_declaration",
+    [
+        "VAR idx : INT := 1; END_VAR",
+        "VAR CONSTANT idx : BOOL := TRUE; END_VAR",
+    ],
+)
+def test_var_inst_reference_initializer_index_checks_owner_not_local_constant(owner_declaration):
+    with pytest.raises(ValidationError, match="constant|INTEGER"):
+        Runtime.from_source(f"""
+        FUNCTION_BLOCK B {owner_declaration}
+        METHOD Read : INT
+        VAR CONSTANT idx : INT := 2; END_VAR
+        VAR_INST data : ARRAY[1..2] OF INT := [3,7]; r : REFERENCE TO INT := data[idx]; END_VAR
+        Read := r;
+        END_METHOD END_FUNCTION_BLOCK
+        """)

@@ -100,6 +100,7 @@ class Registry(dict[str, Pou]):
         self.prototype_pous: dict[str, Pou] = {}
         self.implementers: dict[str, set[str]] = {}
         self.valid_reference_calls: dict[int, LValue] = {}
+        self.reference_initializers: dict[tuple[str, str], tuple[Expr, frozenset[str]]] = {}
         self.interface_comparisons: dict[int, LValue] = {}
         self.global_lists: dict[str, bool] = {}
         self.global_variables: dict[str, tuple[str, ...]] = {}
@@ -493,59 +494,91 @@ class _Validator:
         for var in pou.variables:
             if not isinstance(var.type_name, ReferenceType) or var.initial is None:
                 continue
-            self.reference_source(var.initial, var.type_name, pou)
-            if self.literal_zero(var.initial):
-                continue
-            if var.section == "VAR_INPUT" and pou.kind in {"FUNCTION", "METHOD"}:
-                self.fail("Reference input default must be literal integer 0", var.loc)
-            persistent = var.section == "VAR_INST" or (
-                pou.kind in {"GVL", "PROGRAM", "FUNCTION_BLOCK"} and var.section != "VAR_TEMP"
-            )
+            scope = self.declaration_scope(pou, var)
+            original_variables = self.variables[scope.name]
+            if var.section == "VAR_INST":
+                # Address targets may include this method's persistent bank; declaration
+                # constants keep the owner's scope, as with ordinary VAR_INST defaults.
+                variables = {
+                    name: item
+                    for name, item in original_variables.items()
+                    if item.section == "VAR_INST"
+                }
+                index_scope = self.pous[pou.owner]
+            else:
+                # Header declarations were copied into each accessor. Preserve their
+                # visible names, using the accessor's already resolved value types.
+                variables = {name: self.variables[pou.name][name] for name in original_variables}
+                index_scope = scope
+            self.variables[scope.name] = variables
+            try:
+                initial = self.prepare_reference_initializer(var, scope, index_scope)
+            finally:
+                self.variables[scope.name] = original_variables
+            visible = set(variables)
+            if scope.kind in _RESULT_KINDS and scope.return_type is not None:
+                visible.add(scope.result_name)
+            self.pous.reference_initializers[pou.name, var.name] = initial, frozenset(visible)
 
-            def inspect(expr):
-                if isinstance(self.raw_reference(expr, pou), ReferenceType):
-                    self.fail(
-                        "Reference initializer cannot pass through another reference", expr.loc
-                    )
-                if isinstance(expr, Index):
-                    for index in expr.indices:
-                        _, kind = self.constant_expression(index, pou)
-                        self.require(kind, "INTEGER", index.loc)
+    def prepare_reference_initializer(self, var: VarDecl, pou: Pou, index_scope: Pou) -> Expr:
+        """Check the storage scope and retain selector constants without a second lookup."""
+
+        def freeze_indices(expr):
+            if isinstance(expr, Index):
+                indices = []
+                for index in expr.indices:
+                    value, kind = self.constant_expression(index, index_scope)
+                    self.require(kind, "INTEGER", index.loc)
+                    indices.append(Literal(value, index.loc))
+                return replace(expr, base=freeze_indices(expr.base), indices=tuple(indices))
+            if isinstance(expr, Member):
+                return replace(expr, base=freeze_indices(expr.base))
+            return expr
+
+        initial = freeze_indices(var.initial)
+        self.reference_source(initial, var.type_name, pou)
+        if self.literal_zero(initial):
+            return initial
+        if var.section == "VAR_INPUT" and pou.kind in {"FUNCTION", "METHOD"}:
+            self.fail("Reference input default must be literal integer 0", var.loc)
+        persistent = var.section == "VAR_INST" or (
+            pou.kind in {"GVL", "PROGRAM", "FUNCTION_BLOCK"} and var.section != "VAR_TEMP"
+        )
+
+        def inspect(expr):
+            if isinstance(self.raw_reference(expr, pou), ReferenceType):
+                self.fail("Reference initializer cannot pass through another reference", expr.loc)
+            if isinstance(expr, Index):
+                inspect(expr.base)
+            elif isinstance(expr, Member):
+                if isinstance(expr.base, (This, Super)):
+                    owner = self.reference(expr.base, pou)
+                    binding = self.fb_variable(owner, expr.name)
+                    check(binding[0], binding[1], expr.loc)
+                else:
                     inspect(expr.base)
-                elif isinstance(expr, Member):
-                    if isinstance(expr.base, (This, Super)):
-                        owner = self.reference(expr.base, pou)
-                        binding = self.fb_variable(owner, expr.name)
-                        check(binding[0], binding[1], expr.loc)
-                    else:
-                        inspect(expr.base)
-                elif isinstance(expr, Reference):
-                    binding = self.variable_binding(expr, pou)
-                    if binding is not None:
-                        check(binding[0], binding[1], expr.loc)
-                    elif (
-                        persistent
-                        and expr.parts[0] == pou.result_name
-                        and pou.kind in _RESULT_KINDS
-                    ):
-                        self.fail(
-                            "Persistent reference initializer cannot target invocation storage",
-                            expr.loc,
-                        )
-                    if len(expr.parts) > 1:
-                        inspect(Reference(expr.parts[:-1], expr.loc))
-
-            def check(owner, target, loc):
-                if not persistent:
-                    return
-                if target.section in {"VAR_TEMP", "VAR_IN_OUT"} or (
-                    owner.kind in _RESULT_KINDS and target.section != "VAR_INST"
-                ):
+            elif isinstance(expr, Reference):
+                binding = self.variable_binding(expr, pou)
+                if binding is not None:
+                    check(binding[0], binding[1], expr.loc)
+                elif persistent and expr.parts[0] == pou.result_name and pou.kind in _RESULT_KINDS:
                     self.fail(
-                        "Persistent reference initializer cannot target invocation storage", loc
+                        "Persistent reference initializer cannot target invocation storage",
+                        expr.loc,
                     )
+                if len(expr.parts) > 1:
+                    inspect(Reference(expr.parts[:-1], expr.loc))
 
-            inspect(var.initial)
+        def check(owner, target, loc):
+            if not persistent:
+                return
+            if target.section in {"VAR_TEMP", "VAR_IN_OUT"} or (
+                owner.kind in _RESULT_KINDS and target.section != "VAR_INST"
+            ):
+                self.fail("Persistent reference initializer cannot target invocation storage", loc)
+
+        inspect(initial)
+        return initial
 
     def interface_source(self, expr: Expr, expected: InterfaceType, pou: Pou) -> None:
         if self.literal_zero(expr):
