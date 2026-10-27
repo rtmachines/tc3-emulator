@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_Conveyor">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_Conveyor
+VAR_INPUT
+    config : REFERENCE TO ST_ConveyorConfig;
+END_VAR
+VAR_OUTPUT
+    running : BOOL;
+    actualSpeed : LREAL;
+    missingConfig : BOOL;
+    alarm : STRING(80);
+END_VAR
+VAR
+    startup : TON;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[(* Only configuration is shared; each instance owns its timer and outputs. *)
+missingConfig := NOT __ISVALIDREF(config);
+IF __ISVALIDREF(config) AND_THEN config.enabled THEN
+    startup(IN := TRUE, PT := config.startDelay);
+    running := startup.Q;
+    IF running THEN
+        actualSpeed := config.speed;
+        alarm := '';
+    ELSE
+        actualSpeed := 0.0;
+        alarm := 'Starting';
+    END_IF;
+ELSE
+    (* Never read config here: it may be null or expired. *)
+    startup(IN := FALSE, PT := T#0ms);
+    running := FALSE;
+    actualSpeed := 0.0;
+    IF missingConfig THEN
+        alarm := 'Missing configuration';
+    ELSE
+        alarm := 'Disabled';
+    END_IF;
+END_IF;
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

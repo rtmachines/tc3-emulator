@@ -4,7 +4,7 @@ Interpreter ograniczonego podzbioru Structured Text napisany w Pythonie.
 Uruchamia funkcje, bloki funkcyjne i programy PLC z GVL bez instalacji TwinCAT, również na Linuxie.
 Przeznaczony do szybkich testów logiki w Pythonie/pytest.
 
-**Wersja 0.13 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
+**Wersja 0.14 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
 obsługiwane konstrukcje; pozostałe są odrzucane. Przejście testu nie potwierdza
 pełnej zgodności z runtime Beckhoff. Nie wykonuje binariów ani bibliotek TwinCAT.
 
@@ -89,7 +89,8 @@ assert value.value == 11
 nie zmieniają zgodności.
 Zmiany są natychmiast widoczne przez aliasy. Wszystkie parametry IN_OUT trzeba
 przekazać przy każdym wywołaniu, także dla FB. Funkcje wymagają również wszystkich
-VAR_INPUT. W API Pythona argumenty ST przekazuje się nazwami; w samym ST funkcje
+VAR_INPUT (wyjątek: wejścia referencyjne z jawnym domyślnym 0 w v0.14).
+W API Pythona argumenty ST przekazuje się nazwami; w samym ST funkcje
 obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 
 ## Obsługiwany zakres
@@ -107,6 +108,7 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 - Tablice instancji FB, indeksowane wywołania i metody; ARRAY[*] w VAR_IN_OUT typów wartościowych.
 - LOWER_BOUND/UPPER_BOUND dla tablic stałych i otwartych parametrów.
 - Arytmetyka `+ - * / MOD`, porównania, boolowskie i bitowe AND/OR/XOR/NOT.
+- Referencje do danych `REFERENCE TO`, wiązanie `REF=`, `__ISVALIDREF` i BOOL AND_THEN/OR_ELSE.
 - SHL/SHR/ROL/ROR oraz odczyt/zapis bitów, np. `status.0`, `command.cEnable`.
 - Funkcje tekstowe LEN/LEFT/RIGHT/MID/CONCAT/FIND/INSERT/DELETE/REPLACE i konwersje tekstu.
 - IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, RETURN, EXIT.
@@ -122,8 +124,10 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 
 Poza zakresem pozostają LTIME, DATE/TOD/DT, WSTRING i tekst UTF-8,
 RETAIN/PERSISTENT, VAR_EXTERNAL, metody i właściwości PROGRAM,
-dziedziczenie interfejsów, atrybuty poza GVL qualified_only, biblioteki zewnętrzne oraz wskaźniki i referencje inne
-niż VAR_IN_OUT, zmienne interfejsowe i ograniczony dostęp THIS^/SUPER^. LWORD/LINT/ULINT, pola typu BIT oraz częściowy dostęp `.%B`/`.%W`
+dziedziczenie interfejsów, atrybuty poza GVL qualified_only, biblioteki zewnętrzne,
+ogólne wskaźniki, referencje do FB/interfejsów i referencje zagnieżdżone.
+Obsługiwane mechanizmy aliasowania to VAR_IN_OUT, zmienne interfejsowe,
+REFERENCE TO danych oraz ograniczony dostęp THIS^/SUPER^. LWORD/LINT/ULINT, pola typu BIT oraz częściowy dostęp `.%B`/`.%W`
 nie są obsługiwane.
 Nieznane konstrukcje, także w niewywoływanym kodzie, powodują błąd podczas wczytywania.
 
@@ -1005,12 +1009,14 @@ from pathlib import Path
 from tc_emulator import Runtime
 
 source = Path("examples/conveyor_line")
-runtime = Runtime.from_files([
-    source / "MAIN_Line.TcPOU",
-    source / "GVL_Line.TcGVL",
-    source / "F_Total.TcPOU",
-    Path("examples/conveyor/FB_Conveyor.TcPOU"),
-])
+runtime = Runtime.from_files(
+    [
+        source / "MAIN_Line.TcPOU",
+        source / "GVL_Line.TcGVL",
+        source / "F_Total.TcPOU",
+        Path("examples/conveyor/FB_Conveyor.TcPOU"),
+    ]
+)
 
 second = runtime.program_fb("MAIN_Line", "conveyors", 2)
 second.call_method("Start", delay=250)
@@ -1387,10 +1393,150 @@ dynamiczny hook, podmianę drugiego silnika, izolację awarii i restart,
 Przykłady z poprzednich wersji pozostają dostępne.
 
 Poza zakresem pozostają `ABSTRACT`, `FINAL`, `INTERNAL`, dziedziczenie
-wbudowanych FB i interfejsów, `REFERENCE TO`, ogólne operatory wskaźnikowe,
+wbudowanych FB i interfejsów, ogólne operatory wskaźnikowe,
 `FB_init`/`FB_exit`/`FB_reinit`, akcje, online change i semantyka trwałości PLC.
 Nieobsługiwane deklaracje są odrzucane. Dziedziczenie nie dodaje kopiowania FB
 przez wartość ani przekazywania FB przez `VAR_IN_OUT`.
+
+## Referencje do danych i wspólna konfiguracja (v0.14)
+
+`REFERENCE TO T` wiąże nazwę z istniejącą, zapisywalną pamięcią danych.
+`r REF= x` zmienia powiązanie, a zwykłe `r := wartość` zapisuje do celu.
+`dest := r` odczytuje wartość celu; `r1 := r2` kopiuje wartości.
+`r1 REF= r2` przejmuje bieżący cel `r2`: późniejsze przepięcie `r2` nie przepina `r1`.
+Pola struktur i elementy tablic także mogą być celami referencji. Typ celu musi
+pasować dokładnie, po rozwiązaniu aliasów; wiązanie nie poszerza liczb, nie zmienia
+pojemności STRING ani granic tablic i zachowuje nominalną zgodność typów UDT.
+
+Nowa referencja jest pusta. `r REF= 0` odłącza cel, a kopiowanie pustej referencji
+przez `REF=` daje pustą referencję. Odczyt lub zapis pustego celu powoduje
+`ExecutionError`. `__ISVALIDREF(r)` zwraca FALSE dla pustej lub
+wygasłej referencji. Referencja nie przedłuża życia danych: lokalne dane wywołania
+i `VAR_TEMP` wygasają po zakończeniu swojej aktywacji. Odczyt, zapis oraz próba
+przejęcia wygasłego celu powodują `ExecutionError`; wyczyszczenie przez `REF= 0`
+pozostaje dozwolone. Dane PROGRAM/GVL/FB/VAR_INST i komórki utworzone w Pythonie
+żyją wraz z właścicielem. Kontrola wygaśnięcia w `__ISVALIDREF` jest rozszerzeniem
+emulatora względem natywnego testu niezerowej referencji w TwinCAT. Przykład nie
+stanowi deklaracji pełnej zgodności z TwinCAT.
+
+Oba zapisy inicjalizacji, `r : REFERENCE TO T := target` oraz
+`r : REFERENCE TO T REF= target`, wiążą referencję. Cel inicjalizatora musi być
+bezpośrednim adresem zwykłych zapisywalnych danych; indeksy muszą być stałymi
+wyrażeniami. Łańcuchy przez inną referencję są zabronione. Zwykła pamięć jest
+alokowana i inicjalizowana przed wiązaniem, więc można wskazać dane zadeklarowane
+później. Trwały inicjalizator nie może wskazywać danych lokalnych wywołania,
+`VAR_TEMP` ani `VAR_IN_OUT`. Inicjalizator `VAR_INST` może wskazać własne
+`VAR_INST` metody lub trwałe pola właściciela. Inicjalizatory tymczasowe wykonują
+się po przygotowaniu argumentów i lokalnej pamięci. Trwałe wiązania nie są
+ponawiane przy każdym skanie.
+
+W `VAR_INPUT` typu referencyjnego argument ST `config := GVL_Line.config` wiąże
+pamięć zamiast kopiować strukturę. Pominięcie takiego wejścia FB zachowuje jego
+powiązanie. Funkcje i metody wymagają argumentu, chyba że wejście ma pustą wartość
+domyślną. Dla funkcji, metod i prototypów metod interfejsu dozwolona jest
+wyłącznie jawna pusta wartość domyślna; niezerowe wartości są odrzucane.
+Wejście referencyjne FB może mieć inicjalizator wskazujący bezpośrednio zwykłą
+pamięć, a pominięcie argumentu zachowuje powiązanie. Z Pythona przekaż do
+`set_input("config", cell)` zapisywalną, żywą
+`Cell` z tego samego Runtime i o dokładnie zgodnym typie, albo całkowite `0`,
+aby odłączyć cel. Zwykły słownik, wartość BOOL, obca komórka, widok bitowy i
+wygasła komórka są odrzucane. Tę samą zasadę obsługują `Runtime.call`,
+`FBHandle.call` i `call_method` dla wejść referencyjnych. `global_cell`,
+`program_cell`, `runtime.cell`, `Cell.field()` i `Cell.element()` udostępniają
+pamięć wartości; nie udostępniają surowego slotu referencji. Migawka `inspect()`
+opisuje referencję przez typ celu i ważność, bez adresów i żywych obiektów Cell.
+
+`AND_THEN` i `OR_ELSE` działają tylko dla BOOL i skracają obliczanie: FALSE po
+lewej stronie `AND_THEN` oraz TRUE po lewej stronie `OR_ELSE` pomijają prawy
+operand. Pozwala to bezpiecznie zapisać
+`__ISVALIDREF(config) AND_THEN config.enabled`. Zwykłe `AND` i `OR` pozostają
+zachłanne. Walidacja sprawdza oba operandy także wtedy, gdy jeden zostanie pominięty;
+pominięte wywołanie nie wykonuje skutków ubocznych.
+
+Obsługiwane cele to istniejące typy wartości: skalarne, STRING, ENUM, STRUCT
+i tablice o stałych granicach, również przez aliasy. Referencje można deklarować
+w `VAR`, `VAR_TEMP`, `VAR_INST`, `VAR_GLOBAL` i `VAR_INPUT`, także w lokalnych
+deklaracjach funkcji, metod i akcesorów. Wejścia referencyjne metod interfejsu
+wymagają identycznych kontraktów implementacji i przesłonięć. Zakres v0.14 nie
+obejmuje `POINTER TO`/`ADR`, referencji do FB, interfejsów ani otwartych tablic,
+referencji zwracanych z funkcji/metod i właściwości, zagnieżdżonych referencji,
+struktur/tablic zawierających referencje ani aliasów wskazujących typ referencyjny.
+Nie można deklarować referencji w `VAR_OUTPUT`, `VAR_IN_OUT` i `CONSTANT`.
+Stałe, wyniki właściwości, wartości tymczasowe i widoki bitowe nie są celami wiązania.
+Żywy cel referencji może natomiast zostać przekazany do zwykłego `VAR_IN_OUT`,
+także do otwartej tablicy.
+
+### Trzy przenośniki korzystające z jednej struktury
+
+Natywne pliki w `examples/conveyor_references/` deklarują jedną zwykłą strukturę
+`ST_ConveyorConfig` w GVL: `enabled := TRUE`, `speed := 0.75`,
+`startDelay := T#100ms`. Każdy z trzech FB posiada własny TON i własne wyjścia,
+a ich wejścia `config` wskazują tę samą strukturę. PROGRAM wiąże wejścia podczas
+pierwszego skanu i zachowuje ich powiązania w kolejnych skanach.
+
+Uruchom poniższy scenariusz z katalogu głównego repozytorium po instalacji pakietu
+(np. `python -m pip install -e .`). Czas jest wirtualny: `advance_time` przesuwa
+zegar, a `scan` dopiero aktualizuje wyjścia.
+
+```python
+from pathlib import Path
+from tc_emulator import Runtime
+
+rt = Runtime.from_files(sorted(Path("examples/conveyor_references").glob("*.Tc*")))
+config = rt.global_cell("GVL_Line", "config")
+running = rt.global_cell("GVL_Line", "running")
+speed = rt.global_cell("GVL_Line", "actualSpeed")
+missing = rt.global_cell("GVL_Line", "missingConfig")
+
+rt.scan("MAIN_Line")
+assert running.value == (False, False, False)
+rt.advance_time(99)
+rt.scan("MAIN_Line")
+assert running.value == (False, False, False)
+rt.advance_time(1)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, True)
+assert speed.value == (0.75, 0.75, 0.75)
+
+config.field("speed").value = 0.4
+rt.scan("MAIN_Line")
+assert speed.value == (0.4, 0.4, 0.4)
+config.field("enabled").value = False
+rt.scan("MAIN_Line")
+assert running.value == (False, False, False)
+assert speed.value == (0.0, 0.0, 0.0)
+config.field("enabled").value = True
+rt.scan("MAIN_Line")
+rt.advance_time(100)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, True)
+
+second = rt.program_fb("MAIN_Line", "conveyors", 2)
+second.set_input("config", 0)
+rt.scan("MAIN_Line")
+assert running.value == (True, False, True)
+assert speed.value == (0.4, 0.0, 0.4)
+assert missing.value == (False, True, False)
+assert second.output("alarm") == "Missing configuration"
+rt.advance_time(1000)
+rt.scan("MAIN_Line")
+assert running.value == (True, False, True)
+
+second.set_input("config", config)
+rt.scan("MAIN_Line")
+assert missing.value == (False, False, False)
+assert running.value == (True, False, True)
+rt.advance_time(99)
+rt.scan("MAIN_Line")
+assert running.value == (True, False, True)
+rt.advance_time(1)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, True)
+assert speed.value == (0.4, 0.4, 0.4)
+assert second.output("alarm") == ""
+```
+
+Automatyczne testy scenariusza: `python -m pytest examples/test_conveyor_references.py`.
 
 ## Arytmetyka: profil checked-subset
 
