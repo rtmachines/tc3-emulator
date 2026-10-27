@@ -42,6 +42,7 @@ from .syntax import (
     StringBounds,
     StructDecl,
     StructInitializer,
+    Super,
     This,
     TypeDecl,
     Unary,
@@ -67,7 +68,7 @@ _RESERVED = _SECTIONS | set(
 END_VAR IF THEN ELSIF ELSE END_IF CASE OF END_CASE FOR TO BY DO END_FOR WHILE
 END_WHILE RETURN EXIT TRUE FALSE AND OR XOR NOT MOD PROGRAM END_PROGRAM
 RETAIN PERSISTENT CONSTANT METHOD END_METHOD ACTION PROPERTY EXTENDS IMPLEMENTS INTERFACE
-END_INTERFACE END_GET END_SET END_PROPERTY THIS REPEAT UNTIL END_REPEAT ARRAY STRUCT END_STRUCT TYPE END_TYPE AT POINTER REFERENCE
+END_INTERFACE END_GET END_SET END_PROPERTY THIS SUPER REPEAT UNTIL END_REPEAT ARRAY STRUCT END_STRUCT TYPE END_TYPE AT POINTER REFERENCE
 AND_THEN OR_ELSE VAR_GLOBAL VAR_EXTERNAL""".split()
 )
 _PRECEDENCE = {
@@ -373,6 +374,11 @@ class _Parser:
             raise ParseError("Expected FUNCTION, FUNCTION_BLOCK or PROGRAM", self.token.loc)
         kind = self.take()
         name = self.expect("ID").text
+        extends = None
+        if extension := self.accept("EXTENDS"):
+            if kind.kind != "FUNCTION_BLOCK":
+                raise ParseError("EXTENDS requires a FUNCTION_BLOCK", extension.loc)
+            extends = self.expect("ID").text
         implements = []
         if self.accept("IMPLEMENTS"):
             if kind.kind != "FUNCTION_BLOCK":
@@ -425,11 +431,14 @@ class _Parser:
             tuple(methods),
             properties=tuple(properties),
             implements=tuple(implements),
+            extends=extends,
         )
 
     def method(self, owner: str, *, prototype: bool = False) -> Pou:
         start = self.expect("METHOD")
-        access = self.take().text if self.token.text in {"PUBLIC", "PRIVATE"} else "PUBLIC"
+        access = (
+            self.take().text if self.token.text in {"PUBLIC", "PROTECTED", "PRIVATE"} else "PUBLIC"
+        )
         if prototype and access != "PUBLIC":
             raise ParseError("Interface methods must be PUBLIC", start.loc)
         name = self.expect("ID").text
@@ -474,7 +483,9 @@ class _Parser:
 
     def property_declaration(self, owner: str, *, prototype: bool = False) -> Property:
         start = self.expect("PROPERTY")
-        access = self.take().text if self.token.text in {"PUBLIC", "PRIVATE"} else "PUBLIC"
+        access = (
+            self.take().text if self.token.text in {"PUBLIC", "PROTECTED", "PRIVATE"} else "PUBLIC"
+        )
         if prototype and access != "PUBLIC":
             raise ParseError("Interface properties must be PUBLIC", start.loc)
         name = self.expect("ID").text
@@ -490,7 +501,9 @@ class _Parser:
             if accessor_kind in accessors:
                 raise ParseError(f"Duplicate property {accessor_kind} accessor", token.loc)
             accessor_access = (
-                self.take().text if self.token.text in {"PUBLIC", "PRIVATE"} else access
+                self.take().text
+                if self.token.text in {"PUBLIC", "PROTECTED", "PRIVATE"}
+                else access
             )
             if prototype and accessor_access != "PUBLIC":
                 raise ParseError("Interface accessors must be PUBLIC", token.loc)
@@ -722,7 +735,7 @@ class _Parser:
         elif kind in {"RETURN", "EXIT"}:
             self.take()
             result = Return(token.loc) if kind == "RETURN" else Exit(token.loc)
-        elif kind in {"ID", "THIS"}:
+        elif kind in {"ID", "THIS", "SUPER"}:
             target = self.lvalue()
             if self.accept(":="):
                 result = Assign(target, self.expression(), token.loc)
@@ -819,7 +832,11 @@ class _Parser:
         return Reference(tuple(parts), token.loc)
 
     def lvalue(self) -> LValue:
-        if self.token.kind == "THIS":
+        if self.token.kind == "SUPER":
+            token = self.take()
+            self.expect("^")
+            base = Super(token.loc)
+        elif self.token.kind == "THIS":
             token = self.take()
             self.expect("^")
             self.expect(".")
@@ -927,7 +944,7 @@ class _Parser:
         elif self.accept("("):
             left = self.expression()
             self.expect(")")
-        elif token.kind in {"ID", "THIS"}:
+        elif token.kind in {"ID", "THIS", "SUPER"}:
             if token.kind == "ID" and self.tokens[self.index + 1].kind == "#":
                 self.take()
                 self.take()

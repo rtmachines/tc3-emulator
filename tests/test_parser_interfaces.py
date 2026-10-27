@@ -125,7 +125,6 @@ def test_interfaces_reject_executable_private_and_storage_members(members):
         "PROGRAM P IMPLEMENTS I END_PROGRAM",
         "FUNCTION F IMPLEMENTS I : INT END_FUNCTION",
         "FUNCTION F : INT IMPLEMENTS I END_FUNCTION",
-        "FUNCTION_BLOCK F EXTENDS Base END_FUNCTION_BLOCK",
         "INTERFACE I METHOD M END_METHOD",
     ],
 )

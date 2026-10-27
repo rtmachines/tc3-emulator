@@ -34,6 +34,11 @@ class This:
 
 
 @dataclass(frozen=True)
+class Super:
+    loc: Location
+
+
+@dataclass(frozen=True)
 class Index:
     base: LValue
     indices: tuple[Expr, ...]
@@ -54,7 +59,7 @@ class BitAccess:
     loc: Location
 
 
-LValue = Reference | This | Index | Member | BitAccess
+LValue = Reference | This | Super | Index | Member | BitAccess
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,7 @@ class Call:
     loc: Location
 
 
-Expr = Literal | Reference | This | Index | Member | BitAccess | Unary | Binary | Call
+Expr = Literal | Reference | This | Super | Index | Member | BitAccess | Unary | Binary | Call
 
 
 @dataclass(frozen=True)
@@ -257,6 +262,7 @@ class Pou:
     properties: tuple[Property, ...] = ()
     property_name: str | None = None
     implements: tuple[str, ...] = ()
+    extends: str | None = None
 
     @property
     def result_name(self) -> str:
