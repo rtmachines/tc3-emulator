@@ -180,10 +180,7 @@ def _lex(text: str, source: str, locations: Mapping[int, Location] | None) -> li
             ):
                 advance()
             word = text[start:index].upper()
-            if word == "REF" and index < len(text) and text[index] == "=":
-                advance()
-                tokens.append(_Token("REF=", "REF=", position))
-            elif word in _INTEGER_PREFIXES and index < len(text) and text[index] == "#":
+            if word in _INTEGER_PREFIXES and index < len(text) and text[index] == "#":
                 advance()
                 if index < len(text) and text[index] in "+-":
                     advance()
@@ -266,6 +263,20 @@ class _Parser:
 
     def accept(self, kind: str) -> _Token | None:
         return self.take() if self.token.kind == kind else None
+
+    def accept_ref_assign(self) -> _Token | None:
+        # REF remains an identifier in expressions and named arguments. Combine
+        # its adjacent '=' only where the grammar allows a binding operator.
+        token = self.token
+        if token.kind != "ID" or token.text != "REF":
+            return None
+        equals = self.tokens[self.index + 1]
+        adjacent = Location(token.loc.source, token.loc.line, token.loc.column + 3)
+        if equals.kind != "=" or equals.loc != adjacent:
+            return None
+        self.take()
+        self.take()
+        return _Token("REF=", "REF=", token.loc)
 
     def expect(self, kind: str) -> _Token:
         if self.token.kind != kind:
@@ -351,7 +362,7 @@ class _Parser:
                     if isinstance(type_name, ReferenceSpec)
                     else self.initializer()
                 )
-            elif operator := self.accept("REF="):
+            elif operator := self.accept_ref_assign():
                 if not isinstance(type_name, ReferenceSpec):
                     raise ParseError("REF= initializer requires REFERENCE TO", operator.loc)
                 initial = self.expression()
@@ -765,7 +776,7 @@ class _Parser:
             target = self.lvalue()
             if self.accept(":="):
                 result = Assign(target, self.expression(), token.loc)
-            elif self.accept("REF="):
+            elif self.accept_ref_assign():
                 result = RefAssign(target, self.expression(), token.loc)
             elif not isinstance(target, BitAccess) and self.token.kind == "(":
                 result = CallStatement(self.call(target), token.loc)
@@ -1017,7 +1028,10 @@ def parse_type(
 ) -> TypeSpec | ArrayBounds | OpenArrayBounds | ReferenceSpec:
     """Parse one complete scalar or array type description safely."""
     parser = _Parser(_lex(text, "<type>", None))
-    result = parser.type_spec()
+    try:
+        result = parser.type_spec()
+    except RecursionError as error:
+        raise ParseError("Source nesting exceeds parser capacity", parser.token.loc) from error
     parser.expect("EOF")
     if isinstance(result, StringBounds) or (
         isinstance(result, (ArrayBounds, OpenArrayBounds))

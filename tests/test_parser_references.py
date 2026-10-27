@@ -7,7 +7,7 @@ import pytest
 from tc_emulator import syntax as st
 from tc_emulator import types
 from tc_emulator.errors import ParseError
-from tc_emulator.parser import parse
+from tc_emulator.parser import parse, parse_type
 
 
 def program(declarations="", body=""):
@@ -200,3 +200,45 @@ def test_short_circuit_operators_share_and_or_precedence_and_left_associativity(
         return expression.parts[0]
 
     assert shape(program(body=f"result := {text};").body[0].value) == want
+
+
+@pytest.mark.parametrize(
+    "expression,parts,operator_column",
+    [("ref=0", ("REF",), 12), ("obj.ref=0", ("OBJ", "REF"), 16)],
+)
+def test_ref_identifier_comparisons_without_whitespace_preserve_ast_and_locations(
+    expression, parts, operator_column
+):
+    comparison = program(body=f"  ok := {expression};").body[0].value
+    assert isinstance(comparison, st.Binary) and comparison.op == "="
+    assert comparison.left.parts == parts
+    assert comparison.left.loc == st.Location("references.st", 3, 9)
+    assert comparison.loc == st.Location("references.st", 3, operator_column)
+    assert comparison.right.value == 0
+    assert comparison.right.loc == st.Location("references.st", 3, operator_column + 1)
+
+
+def test_this_member_named_ref_remains_a_comparison_operand_without_whitespace():
+    comparison = program(body="  ok := THIS^.ref=0;").body[0].value
+    assert isinstance(comparison, st.Binary) and comparison.op == "="
+    assert isinstance(comparison.left, st.Member) and comparison.left.name == "REF"
+    assert isinstance(comparison.left.base, st.This)
+    assert comparison.loc == st.Location("references.st", 3, 18)
+    assert comparison.right.value == 0
+
+
+def test_ref_named_output_argument_preserves_arrow_and_source_positions():
+    call = program(body="Run(ref=>sink);").body[0].call
+    argument = call.arguments[0]
+    assert argument.name == "REF" and argument.mode == "=>"
+    assert argument.value.parts == ("SINK",)
+    assert argument.loc == st.Location("references.st", 3, 5)
+    assert argument.value.loc == st.Location("references.st", 3, 10)
+
+
+def test_parse_type_excessive_reference_nesting_has_a_source_aware_error():
+    with pytest.raises(ParseError, match="nesting exceeds parser capacity") as caught:
+        parse_type("REFERENCE TO\n" * 1500 + "INT")
+    assert caught.value.loc.source == "<type>"
+    assert 1 < caught.value.loc.line <= 1501
+    assert caught.value.loc.column >= 1
