@@ -316,3 +316,55 @@ def test_inherited_public_property_with_protected_setter_remains_read_only_to_py
     assert fb.get_property("P") == 5
     with pytest.raises(ArgumentError, match="PROTECTED"):
         fb.set_property("P", 9)
+
+
+def test_super_rebinding_inout_is_live_for_all_body_reads_and_writes():
+    rt = Runtime.from_source("""
+    FUNCTION_BLOCK A VAR_IN_OUT value : INT; END_VAR value := value + 1; END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B EXTENDS A
+    VAR other : INT := 10; END_VAR
+    VAR_OUTPUT plain, explicit_this, explicit_super, after_plain, after_this : INT; END_VAR
+    SUPER^(value := other);
+    plain := value; explicit_this := THIS^.value; explicit_super := SUPER^.value;
+    value := value + 1; after_plain := SUPER^.value;
+    THIS^.value := THIS^.value + 1; after_this := value;
+    SUPER^.value := SUPER^.value + 1;
+    END_FUNCTION_BLOCK
+    """)
+    fb, original = rt.instantiate("B"), rt.cell("INT", 2)
+    fb.call(value=original)
+    assert (fb.output("plain"), fb.output("explicit_this"), fb.output("explicit_super")) == (
+        11,
+        11,
+        11,
+    )
+    assert (fb.output("after_plain"), fb.output("after_this")) == (12, 13)
+    assert fb.inspect()["VALUE"] == fb.inspect()["OTHER"] == 14
+    assert original.value == 2
+
+
+def test_nested_super_rebinding_updates_suspended_descendant_activations():
+    rt = Runtime.from_source("""
+    FUNCTION_BLOCK A VAR_IN_OUT value : INT; END_VAR value := value + 1; END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B EXTENDS A VAR other : INT := 10; END_VAR
+    VAR_TEMP base_temp : INT := 20; END_VAR
+    VAR_OUTPUT middle : INT; END_VAR
+    SUPER^(value := other); value := value + 1; middle := value + THIS^.base_temp;
+    END_FUNCTION_BLOCK
+    FUNCTION_BLOCK C EXTENDS B VAR_TEMP child_temp : INT := 30; END_VAR
+    VAR_OUTPUT plain, explicit_this, explicit_super : INT; END_VAR
+    SUPER^(value := value);
+    plain := value; explicit_this := THIS^.value; explicit_super := SUPER^.value;
+    value := value + child_temp;
+    END_FUNCTION_BLOCK
+    """)
+    fb, original = rt.instantiate("C"), rt.cell("INT", 2)
+    fb.call(value=original)
+    assert (fb.output("plain"), fb.output("explicit_this"), fb.output("explicit_super")) == (
+        12,
+        12,
+        12,
+    )
+    assert fb.output("middle") == 32
+    assert fb.inspect()["VALUE"] == fb.inspect()["OTHER"] == 42
+    assert original.value == 2

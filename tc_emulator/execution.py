@@ -180,7 +180,9 @@ class Engine:
             try:
                 base = (
                     frame
-                    if isinstance(ref.base, st.This) and frame.pou.kind == "FUNCTION_BLOCK"
+                    if isinstance(ref.base, st.This)
+                    and frame.pou.kind == "FUNCTION_BLOCK"
+                    and ref.name in frame.slots
                     else self.resolve(ref.base, frame, ctx)
                 )
                 if isinstance(base, Frame):
@@ -294,17 +296,14 @@ class Engine:
             raise ExecutionError("Call depth limit exceeded", loc, tuple(ctx.stack))
         persistent = None
         if frame.pou.kind == "FUNCTION_BLOCK" and frame.timer is None and frame.standard is None:
-            # A body activation shares persistent cells and concrete identity, but
-            # owns only its lexical body's temporary slots and lifetime.
+            # Keep only temporaries in the activation. Persistent references use
+            # lexical owner lookup against the live root, including IN_OUT aliases
+            # rebound while this body is suspended inside SUPER.
             persistent = frame
             declaration = body or frame.pou
             frame = Frame(
                 declaration,
-                {
-                    decl.name: persistent.slots[decl.name]
-                    for decl in self.registry.variables_for(declaration)
-                    if decl.section != "VAR_TEMP"
-                },
+                {},
                 lifetime=persistent.lifetime,
                 method_owner=persistent,
             )
@@ -316,13 +315,12 @@ class Engine:
                     frame.slots[decl.name] = self._variable(decl, temporary_lifetime)
                     if persistent is not None and persistent.pou.name == frame.pou.name:
                         persistent.slots[decl.name] = frame.slots[decl.name]
+            input_slots = persistent.slots if persistent is not None else frame.slots
             for name, value in inputs.items():
                 if isinstance(value, Cell):
-                    frame.slots[name] = value
-                    if persistent is not None:
-                        persistent.slots[name] = value
+                    input_slots[name] = value
                 else:
-                    target = frame.slots[name]
+                    target = input_slots[name]
                     if isinstance(target, InterfaceSlot):
                         target.bind(value, loc)
                         continue
