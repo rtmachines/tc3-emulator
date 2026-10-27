@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_MotorFake">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_MotorFake EXTENDS FB_MotorBase
+VAR_INPUT
+    fault : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[SUPER^();
+]]></ST>
+    </Implementation>
+    <Method Name="CheckFault">
+      <Declaration><![CDATA[METHOD PROTECTED CheckFault : BOOL
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[(* SUPER selects the base hook, while inherited Update dispatches here. *)
+CheckFault := SUPER^.CheckFault() OR fault;
+]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

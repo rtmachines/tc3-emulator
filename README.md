@@ -4,7 +4,7 @@ Interpreter ograniczonego podzbioru Structured Text napisany w Pythonie.
 Uruchamia funkcje, bloki funkcyjne i programy PLC z GVL bez instalacji TwinCAT, również na Linuxie.
 Przeznaczony do szybkich testów logiki w Pythonie/pytest.
 
-**Wersja 0.12 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
+**Wersja 0.13 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
 obsługiwane konstrukcje; pozostałe są odrzucane. Przejście testu nie potwierdza
 pełnej zgodności z runtime Beckhoff. Nie wykonuje binariów ani bibliotek TwinCAT.
 
@@ -111,9 +111,10 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 - Funkcje tekstowe LEN/LEFT/RIGHT/MID/CONCAT/FIND/INSERT/DELETE/REPLACE i konwersje tekstu.
 - IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, RETURN, EXIT.
 - Funkcje w wyrażeniach, zagnieżdżone FB, dostęp do ich wejść/wyjść, wiązania `=>`.
-- Metody FB: METHOD, PUBLIC/PRIVATE, parametry i wyniki, wywołania ze ST i Pythona.
+- Metody FB: METHOD, PUBLIC/PROTECTED/PRIVATE, parametry i wyniki, wywołania ze ST i Pythona.
 - Właściwości FB PROPERTY GET/SET, THIS^ oraz VAR_INST w metodach FB.
 - INTERFACE/IMPLEMENTS, zmienne interfejsowe i dynamiczne wywołania metod/właściwości.
+- Pojedyncze dziedziczenie FB przez EXTENDS, nadpisania metod/właściwości i SUPER^.
 - Nazwy bez rozróżniania wielkości liter; komentarze `//` i zagnieżdżone `(* ... *)`.
 - Import deklaracji i implementacji ST z `.TcPOU`, w tym metod i właściwości FB; bez akcji.
 - Import pojedynczej deklaracji typu z prostego `.TcDUT` i listy globalnej z `.TcGVL`.
@@ -121,8 +122,8 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 
 Poza zakresem pozostają LTIME, DATE/TOD/DT, WSTRING i tekst UTF-8,
 RETAIN/PERSISTENT, VAR_EXTERNAL, metody i właściwości PROGRAM,
-dziedziczenie, atrybuty poza GVL qualified_only, biblioteki zewnętrzne oraz wskaźniki i referencje inne
-niż VAR_IN_OUT, zmienne interfejsowe i ograniczony dostęp THIS^. LWORD/LINT/ULINT, pola typu BIT oraz częściowy dostęp `.%B`/`.%W`
+dziedziczenie interfejsów, atrybuty poza GVL qualified_only, biblioteki zewnętrzne oraz wskaźniki i referencje inne
+niż VAR_IN_OUT, zmienne interfejsowe i ograniczony dostęp THIS^/SUPER^. LWORD/LINT/ULINT, pola typu BIT oraz częściowy dostęp `.%B`/`.%W`
 nie są obsługiwane.
 Nieznane konstrukcje, także w niewywoływanym kodzie, powodują błąd podczas wczytywania.
 
@@ -958,9 +959,9 @@ assert controller.call_method("IsRunning").value is False
 Testy `examples/test_conveyor_methods.py` pokazują także pełne skany PLC,
 pierwszeństwo interlocków, niezależne instancje i reset licznika produktów.
 
-Metody pozostają ograniczone do FB, bez dziedziczenia, interfejsów i specjalnych
-`FB_init`/`FB_reinit`/`FB_exit`. Wersja v0.11 dodaje `THIS^`, `VAR_INST` i właściwości
-— opis poniżej.
+Metody pozostają ograniczone do FB, bez specjalnych
+`FB_init`/`FB_reinit`/`FB_exit`. Kolejne wersje dodają `THIS^`, `VAR_INST`, właściwości,
+interfejsy i dziedziczenie — opis poniżej.
 Metoda nie może odwoływać się do `VAR_TEMP` ani `VAR_IN_OUT` właściciela;
 własne `VAR_IN_OUT` metody jest obsługiwane. Ograniczenie dotyczące właściciela
 zapobiega używaniu zapamiętanego powiązania z wcześniejszego wywołania FB.
@@ -1292,6 +1293,104 @@ zajmuje jedną pozycję w limicie pamięci skalarnej.
 
 Semantyka referencyjna: [deklaracja interfejsu](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/4256428299.html)
 i [zmienne interfejsowe](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/5680748299.html).
+
+## Dziedziczenie bloków funkcyjnych (v0.13)
+
+`FUNCTION_BLOCK FB_MotorFake EXTENDS FB_MotorBase` dziedziczy pamięć,
+metody, właściwości oraz zadeklarowane interfejsy bazy. Obsługujemy pojedyncze,
+wielopoziomowe dziedziczenie własnych FB, niezależnie od kolejności deklaracji
+lub plików. Każda instancja, również element tablicy, ma własną pamięć bazy,
+zagnieżdżone FB i timery. `inspect()` pokazuje odziedziczony stan tylko raz.
+
+Zwykłe wywołania, `THIS^` i wywołania przez interfejs wybierają najbardziej
+pochodną implementację. Dotyczy to również wywołań z kodu bazy: jej metoda
+może wywołać nadpisaną metodę `PROTECTED` potomka na tej samej instancji.
+`PRIVATE` pozostaje dostępne tylko w leksykalnym zakresie deklarującego FB
+oraz związane z jego implementacją. `PROTECTED` dopuszcza kod tego FB i jego
+potomków; zewnętrzne ST i Python nie mogą go wywołać. Interfejsy wymagają
+publicznych metod i akcesorów.
+
+Ciało bazy nie wykonuje się automatycznie przy wywołaniu potomka.
+`SUPER^()` jawnie wykonuje ciało bezpośredniej bazy deklarującego FB,
+a `SUPER^.Method()` oraz odczyt/zapis `SUPER^.Property` wybierają implementację
+widoczną w tej bazie. Wewnątrz tak wywołanego kodu zwykłe wywołania nadal
+wybierają nadpisania potomka. `SUPER^.field` korzysta ze wspólnej pamięci
+instancji; `SUPER` nie jest samodzielną wartością ani ogólnym wskaźnikiem.
+
+Nadpisana metoda musi zachować nazwy, kolejność, kierunki i rozstrzygnięte typy
+parametrów, typ wyniku, dostęp oraz kontrakt wartości domyślnych i wymaganych
+argumentów. Nadpisanie właściwości zastępuje ją w całości: musi zachować typ,
+dostęp oraz pełny zestaw akcesorów i ich dostęp. Nie łączymy brakującego GET
+lub SET z implementacją bazy. Nazwy odziedziczonych zmiennych i członków nie
+mogą być przesłaniane. Dotyczy to także nazw `VAR_TEMP`: ten profil odrzuca
+wyjątek TwinCAT pozwalający potomkowi ponownie zadeklarować taką nazwę.
+Sama zmienna `VAR_TEMP` jest widoczna wyłącznie w aktywacji ciała deklarującego
+FB, bez dostępu z ciał potomków, metod lub akcesorów.
+
+`VAR_INST` odziedziczonej metody należy do jej deklaracji i konkretnej instancji.
+Nadpisanie oraz jawnie wywołana metoda bazy mają oddzielne banki tej pamięci.
+W `inspect()["$VAR_INST"]` unikalna nazwa metody zachowuje krótki klucz, np. `M`.
+Jeżeli baza i nadpisanie mają banki o tej samej nazwie metody, oba klucze są
+kwalifikowane, np. `BASE.M` i `CHILD.M`, aby żaden stan nie został pominięty.
+Dziedziczenie zachowuje dotychczasowe limity pamięci, budżety wykonania,
+wirtualny czas, czas życia interfejsów i blokadę Runtime po błędzie.
+Potencjalna rekurencja wywołań dynamicznych jest odrzucana konserwatywnie.
+
+**Przykład trzech przenośników:** `examples/conveyor_inheritance/` zawiera
+natywne `.TcPOU`, `.TcGVL` i `.TcIO`. `FB_MotorBase IMPLEMENTS I_Motor`
+przechowuje wspólny stan, właściwości i timer startu w metodzie `Update`.
+`FB_MotorSim` dziedziczy tę implementację; `FB_MotorFake` nadpisuje chroniony
+`CheckFault`, wywołując też `SUPER^.CheckFault()`. Odziedziczone `Update`
+i `Faulted` korzystają z tego nadpisania. Ciała obu potomków demonstrują
+jawne `SUPER^()`. Sterowniki nadal sterują silnikami przez `I_Motor`.
+
+Uruchomienie z katalogu projektu:
+
+```python
+from pathlib import Path
+from tc_emulator import Runtime
+
+source = Path("examples/conveyor_inheritance")
+runtime = Runtime.from_files(sorted(source.glob("*.Tc*")))
+runtime.scan("MAIN_Line")
+fake = runtime.instantiate("FB_MotorFake")
+fake.set_property("SpeedSetpoint", 2.0)  # Setter odziedziczony z bazy.
+assert fake.get_property("SpeedSetpoint") == 1.0
+second = runtime.program_fb("MAIN_Line", "conveyors", 2)
+second.call_method("BindMotor", motor=fake)  # Odziedziczony I_Motor.
+second.set_property("SpeedSetpoint", 0.75)
+runtime.global_cell("GVL_Line", "start").value = [True, True, True]
+runtime.scan("MAIN_Line")
+runtime.global_cell("GVL_Line", "start").value = [False, False, False]
+runtime.advance_time(500)  # Trzy niezależne opóźnienia: 100/250/500 ms.
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "running").value == (True, True, True)
+assert fake.get_property("ActualSpeed") == 0.75  # Właściwość bazy.
+
+fake.set_input("fault", True)
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "running").value == (True, False, True)
+assert second.get_property("Alarm") == "Motor fault"
+fake.set_input("fault", False)
+runtime.scan("MAIN_Line")
+assert second.get_property("Running") is False
+second.call_method("Start", delay=250)  # Usunięcie awarii wymaga nowego startu.
+runtime.scan("MAIN_Line")
+runtime.advance_time(250)
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "running").value == (True, True, True)
+```
+
+`examples/test_conveyor_inheritance.py` sprawdza niezależne opóźnienia,
+dynamiczny hook, podmianę drugiego silnika, izolację awarii i restart,
+`SUPER`, odziedziczone właściwości, ograniczenia dostępu oraz liczniki produktów.
+Przykłady z poprzednich wersji pozostają dostępne.
+
+Poza zakresem pozostają `ABSTRACT`, `FINAL`, `INTERNAL`, dziedziczenie
+wbudowanych FB i interfejsów, `REFERENCE TO`, ogólne operatory wskaźnikowe,
+`FB_init`/`FB_exit`/`FB_reinit`, akcje, online change i semantyka trwałości PLC.
+Nieobsługiwane deklaracje są odrzucane. Dziedziczenie nie dodaje kopiowania FB
+przez wartość ani przekazywania FB przez `VAR_IN_OUT`.
 
 ## Arytmetyka: profil checked-subset
 

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_MotorBase">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_MotorBase IMPLEMENTS I_Motor
+VAR_OUTPUT
+    updates : UDINT;
+    bodyCalls : UDINT;
+END_VAR
+VAR
+    speed : LREAL := 0.5;
+    runningState : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[bodyCalls := bodyCalls + 1;
+]]></ST>
+    </Implementation>
+    <Method Name="Update">
+      <Declaration><![CDATA[METHOD PUBLIC Update
+VAR_INPUT
+    run : BOOL;
+    delay : TIME;
+END_VAR
+VAR_INST
+    startup : TON;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[updates := updates + 1;
+(* The protected property reaches the most-derived CheckFault hook. *)
+startup(IN := run AND THIS^.MayRun, PT := delay);
+THIS^.runningState := startup.Q;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="CheckFault">
+      <Declaration><![CDATA[METHOD PROTECTED CheckFault : BOOL
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[CheckFault := FALSE;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="ClampSpeed">
+      <Declaration><![CDATA[METHOD PRIVATE ClampSpeed : LREAL
+VAR_INPUT
+    value : LREAL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[ClampSpeed := LIMIT(0.0, value, 1.0);
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="MayRun">
+      <Declaration><![CDATA[PROPERTY PROTECTED MayRun : BOOL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[MayRun := NOT THIS^.CheckFault();
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY PUBLIC SpeedSetpoint : LREAL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[SpeedSetpoint := THIS^.speed;
+]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[THIS^.speed := THIS^.ClampSpeed(value := SpeedSetpoint);
+]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY PUBLIC Running : BOOL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[Running := THIS^.runningState;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Faulted">
+      <Declaration><![CDATA[PROPERTY PUBLIC Faulted : BOOL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[Faulted := THIS^.CheckFault();
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="ActualSpeed">
+      <Declaration><![CDATA[PROPERTY PUBLIC ActualSpeed : LREAL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[IF THIS^.runningState THEN
+    ActualSpeed := THIS^.speed;
+ELSE
+    ActualSpeed := 0.0;
+END_IF;
+]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

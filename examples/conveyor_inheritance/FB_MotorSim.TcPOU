@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_MotorSim">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_MotorSim EXTENDS FB_MotorBase
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[(* Base bodies run only when called explicitly. Shared Update is inherited. *)
+SUPER^();
+]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
