@@ -124,6 +124,13 @@ class Assign:
 
 
 @dataclass(frozen=True)
+class RefAssign:
+    target: LValue
+    value: Expr
+    loc: Location
+
+
+@dataclass(frozen=True)
 class CallStatement:
     call: Call
     loc: Location
@@ -171,7 +178,7 @@ class Exit:
     loc: Location
 
 
-Statement = Assign | CallStatement | If | Case | For | While | Return | Exit
+Statement = Assign | RefAssign | CallStatement | If | Case | For | While | Return | Exit
 
 
 @dataclass(frozen=True)
@@ -187,7 +194,7 @@ class ArrayBounds:
     """An array type whose expression bounds await constant resolution."""
 
     bounds: tuple[tuple[Expr, Expr], ...]
-    element_type: TypeSpec | StringBounds
+    element_type: TypeSpec | StringBounds | ReferenceSpec
     loc: Location
 
 
@@ -196,14 +203,22 @@ class OpenArrayBounds:
     """An open array parameter whose STRING capacity awaits constant resolution."""
 
     rank: int
-    element_type: TypeSpec | StringBounds
+    element_type: TypeSpec | StringBounds | ReferenceSpec
+    loc: Location
+
+
+@dataclass(frozen=True)
+class ReferenceSpec:
+    """A reference target awaiting semantic resolution and validation."""
+
+    target: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | ReferenceSpec
     loc: Location
 
 
 @dataclass(frozen=True)
 class VarDecl:
     name: str
-    type_name: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds
+    type_name: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | ReferenceSpec
     section: str
     initial: Initializer | None
     loc: Location
@@ -232,7 +247,15 @@ class EnumDecl:
 @dataclass(frozen=True)
 class TypeDecl:
     name: str
-    definition: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | StructDecl | EnumDecl
+    definition: (
+        TypeSpec
+        | ArrayBounds
+        | OpenArrayBounds
+        | StringBounds
+        | ReferenceSpec
+        | StructDecl
+        | EnumDecl
+    )
     initial: Initializer | None
     loc: Location
 
@@ -240,7 +263,7 @@ class TypeDecl:
 @dataclass(frozen=True)
 class Property:
     name: str
-    type_name: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds
+    type_name: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | ReferenceSpec
     variables: tuple[VarDecl, ...]
     getter: Pou | None
     setter: Pou | None
@@ -252,7 +275,7 @@ class Property:
 class Pou:
     kind: str
     name: str
-    return_type: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | None
+    return_type: TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | ReferenceSpec | None
     variables: tuple[VarDecl, ...]
     body: tuple[Statement, ...]
     loc: Location

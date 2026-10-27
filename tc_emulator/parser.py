@@ -36,7 +36,9 @@ from .syntax import (
     Pou,
     Program,
     Property,
+    RefAssign,
     Reference,
+    ReferenceSpec,
     Return,
     Statement,
     StringBounds,
@@ -73,8 +75,10 @@ AND_THEN OR_ELSE VAR_GLOBAL VAR_EXTERNAL""".split()
 )
 _PRECEDENCE = {
     "OR": 1,
+    "OR_ELSE": 1,
     "XOR": 2,
     "AND": 3,
+    "AND_THEN": 3,
     "=": 4,
     "<>": 4,
     "<": 5,
@@ -176,7 +180,10 @@ def _lex(text: str, source: str, locations: Mapping[int, Location] | None) -> li
             ):
                 advance()
             word = text[start:index].upper()
-            if word in _INTEGER_PREFIXES and index < len(text) and text[index] == "#":
+            if word == "REF" and index < len(text) and text[index] == "=":
+                advance()
+                tokens.append(_Token("REF=", "REF=", position))
+            elif word in _INTEGER_PREFIXES and index < len(text) and text[index] == "#":
                 advance()
                 if index < len(text) and text[index] in "+-":
                     advance()
@@ -337,7 +344,17 @@ class _Parser:
                 names.append(self.expect("ID"))
             self.expect(":")
             type_name = self.type_spec()
-            initial = self.initializer() if self.accept(":=") else None
+            initial = None
+            if self.accept(":="):
+                initial = (
+                    self.expression()
+                    if isinstance(type_name, ReferenceSpec)
+                    else self.initializer()
+                )
+            elif operator := self.accept("REF="):
+                if not isinstance(type_name, ReferenceSpec):
+                    raise ParseError("REF= initializer requires REFERENCE TO", operator.loc)
+                initial = self.expression()
             self.expect(";")
             variables.extend(
                 VarDecl(n.text, type_name, section, initial, n.loc, constant=constant)
@@ -549,7 +566,9 @@ class _Parser:
             self.expect("END_VAR")
         return tuple(variables)
 
-    def scalar_type(self) -> TypeSpec | StringBounds:
+    def scalar_type(self) -> TypeSpec | StringBounds | ReferenceSpec:
+        if self.token.kind == "REFERENCE":
+            return self.type_spec()
         token = self.expect("ID")
         if token.text != "STRING":
             return token.text
@@ -569,8 +588,13 @@ class _Parser:
         except (TypeError, ValueError) as error:
             raise ParseError(str(error), token.loc) from error
 
-    def type_spec(self) -> TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds:
+    def type_spec(
+        self,
+    ) -> TypeSpec | ArrayBounds | OpenArrayBounds | StringBounds | ReferenceSpec:
         start = self.token
+        if self.accept("REFERENCE"):
+            self.expect("TO")
+            return ReferenceSpec(self.type_spec(), start.loc)
         if not self.accept("ARRAY"):
             return self.scalar_type()
         self.expect("[")
@@ -582,6 +606,8 @@ class _Parser:
             self.expect("]")
             self.expect("OF")
             element_type = self.scalar_type()
+            if isinstance(element_type, ReferenceSpec):
+                return OpenArrayBounds(rank, element_type, start.loc)
             try:
                 descriptor = OpenArrayType(
                     rank, "STRING" if isinstance(element_type, StringBounds) else element_type
@@ -620,7 +646,7 @@ class _Parser:
             return None
 
         literal_bounds = tuple((literal_bound(low), literal_bound(high)) for low, high in bounds)
-        if isinstance(element_type, StringBounds) or any(
+        if isinstance(element_type, (StringBounds, ReferenceSpec)) or any(
             low is None or high is None for low, high in literal_bounds
         ):
             return ArrayBounds(tuple(bounds), element_type, start.loc)
@@ -739,6 +765,8 @@ class _Parser:
             target = self.lvalue()
             if self.accept(":="):
                 result = Assign(target, self.expression(), token.loc)
+            elif self.accept("REF="):
+                result = RefAssign(target, self.expression(), token.loc)
             elif not isinstance(target, BitAccess) and self.token.kind == "(":
                 result = CallStatement(self.call(target), token.loc)
             else:
@@ -984,7 +1012,9 @@ def parse(
         raise ParseError("Source nesting exceeds parser capacity", parser.token.loc) from error
 
 
-def parse_type(text: str) -> TypeSpec | ArrayBounds:
+def parse_type(
+    text: str,
+) -> TypeSpec | ArrayBounds | OpenArrayBounds | ReferenceSpec:
     """Parse one complete scalar or array type description safely."""
     parser = _Parser(_lex(text, "<type>", None))
     result = parser.type_spec()

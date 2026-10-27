@@ -65,6 +65,16 @@ class InterfaceType:
 
 
 @dataclass(frozen=True)
+class ReferenceType:
+    """Resolved non-owning data reference descriptor; never a PLC value type."""
+
+    target: TypeSpec
+
+    def __str__(self) -> str:
+        return f"REFERENCE TO {self.target}"
+
+
+@dataclass(frozen=True)
 class ArrayType:
     """Fixed inclusive ST bounds; the last index varies fastest."""
 
@@ -308,6 +318,7 @@ TypeSpec = (
     | AliasType
     | StringType
     | InterfaceType
+    | ReferenceType
 )
 Scalar = int | bool | float | str | EnumValue
 Value = Scalar | tuple | StructValue
@@ -356,7 +367,7 @@ def resolve_type(type_name: TypeSpec, registry: Mapping[str, TypeSpec]) -> TypeS
         if name not in registry:
             raise ValueError(f"Unknown value type {name}")
         resolved = registry[name]
-        if isinstance(resolved, (OpenArrayType, FBArrayType, InterfaceType)):
+        if isinstance(resolved, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
             raise TypeError("Expected a supported value type")
         return resolved
     if isinstance(type_name, ArrayType):
@@ -367,7 +378,7 @@ def resolve_type(type_name: TypeSpec, registry: Mapping[str, TypeSpec]) -> TypeS
 
 
 def value_leaf_count(type_name: TypeSpec) -> int:
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType)):
+    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, AliasType):
         return value_leaf_count(type_name.target)
@@ -476,7 +487,7 @@ def check_float_literal(type_name: str, value: Scalar, raw_text: str | None = No
 
 def check_value(type_name: TypeSpec, value: object) -> Value:
     """Return a checked scalar or detached immutable array value."""
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType)):
+    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, StringType):
         if not isinstance(value, str):
@@ -575,7 +586,7 @@ def check_value(type_name: TypeSpec, value: object) -> Value:
 
 def default_value(type_name: TypeSpec) -> Value:
     """Return a fresh immutable default value for a supported PLC type."""
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType)):
+    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, AliasType):
         return (
