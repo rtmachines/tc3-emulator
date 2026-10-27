@@ -11,15 +11,17 @@ from tc_emulator import syntax as st
 from tc_emulator.errors import ArgumentError, ExecutionError, ParseError, RuntimeFaultedError
 from tc_emulator.execution import Context, Engine
 from tc_emulator.loader import load_files
-from tc_emulator.memory import BitCell, Cell, FBArray, Frame, InterfaceSlot
+from tc_emulator.memory import BitCell, Cell, FBArray, Frame, InterfaceSlot, ReferenceSlot
 from tc_emulator.parser import parse, parse_type
 from tc_emulator.types import (
     InterfaceType,
+    ReferenceType,
     TypeSpec,
     Value,
     check_value,
     inout_compatible,
     resolve_type,
+    same_type,
     value_leaf_count,
 )
 from tc_emulator.validation import validate
@@ -150,9 +152,18 @@ class Runtime:
 
     def _new_frame(self, pou: st.Pou, method_owner: Frame | None = None) -> Frame:
         try:
-            if method_owner is not None:
-                return self._engine.new_method_frame(pou, method_owner)
-            return self._engine.new_frame(pou)
+            frame = (
+                self._engine.new_method_frame(pou, method_owner)
+                if method_owner is not None
+                else self._engine.new_frame(pou)
+            )
+            self._engine.initialize_owned(frame)
+            return frame
+        except ExecutionError as error:
+            self._faulted = True
+            if not error.stack:
+                raise ExecutionError(error.message, error.loc or pou.loc, (pou.name,)) from error
+            raise
         except RecursionError as error:
             self._faulted = True
             raise ExecutionError("Instance nesting limit exceeded", pou.loc, (pou.name,)) from error
@@ -194,7 +205,9 @@ class Runtime:
             if canonical not in declarations:
                 raise ArgumentError(f"Unknown input argument {name}", pou.loc)
             decl = declarations[canonical]
-            if isinstance(decl.type_name, InterfaceType):
+            if isinstance(decl.type_name, ReferenceType):
+                normalized[canonical] = self._reference_argument(decl.type_name, value, pou.loc)
+            elif isinstance(decl.type_name, InterfaceType):
                 normalized[canonical] = self._interface_argument(decl.type_name, value, pou.loc)
             elif decl.section == "VAR_IN_OUT":
                 if isinstance(value, BitCell):
@@ -220,11 +233,29 @@ class Runtime:
         for decl in declarations.values():
             if (
                 pou.kind == "FUNCTION"
+                and not (isinstance(decl.type_name, ReferenceType) and decl.initial is not None)
                 or decl.section == "VAR_IN_OUT"
                 or (pou.kind == "METHOD" and decl.initial is None)
             ) and decl.name not in normalized:
                 raise ArgumentError(f"Missing required argument {decl.name}", pou.loc)
         return normalized
+
+    def _reference_argument(
+        self, kind: ReferenceType, value: object, loc: st.Location
+    ) -> Cell | None:
+        if type(value) is int and value == 0:
+            return None
+        if not isinstance(value, Cell) or isinstance(value, BitCell):
+            raise ArgumentError("Reference input requires a writable Cell or integer 0", loc)
+        if value._owner is not self:
+            raise ArgumentError("Reference cell belongs to a different runtime", loc)
+        if value.read_only:
+            raise ArgumentError("Reference input cannot bind a read-only constant Cell", loc)
+        if not value._lifetime.alive:
+            raise ArgumentError("Expired reference target", loc)
+        if not same_type(kind.target, value.type_name):
+            raise ArgumentError(f"Reference input requires exact type {kind.target}", loc)
+        return value
 
     def _interface_argument(
         self, kind: InterfaceType, value: object, loc: st.Location
@@ -423,18 +454,23 @@ class FBHandle:
             raise ArgumentError(f"{name}: {error}", accessor.loc) from error
         self._execute_property(accessor, normalized)
 
-    def _field(self, name: str, section: str) -> Cell | InterfaceSlot:
+    def _field(self, name: str, section: str) -> Cell | InterfaceSlot | ReferenceSlot:
         canonical = _name(name)
         for decl in self._runtime._registry.variables_for(self._frame.pou):
             if decl.name == canonical and decl.section == section:
                 return self._frame.slots[canonical]
         raise ArgumentError(f"Unknown {section} variable {name}", self._frame.pou.loc)
 
-    def set_input(self, name: str, value: Value | FBHandle) -> None:
+    def set_input(self, name: str, value: Value | Cell | FBHandle) -> None:
         """Set a VAR_INPUT without executing the FB."""
         self._runtime._ensure_healthy()
         target = self._field(name, "VAR_INPUT")
-        if isinstance(target, InterfaceSlot):
+        if isinstance(target, ReferenceSlot):
+            target.bind(
+                self._runtime._reference_argument(target.type_name, value, self._frame.pou.loc),
+                self._frame.pou.loc,
+            )
+        elif isinstance(target, InterfaceSlot):
             target.bind(
                 self._runtime._interface_argument(target.type_name, value, self._frame.pou.loc),
                 self._frame.pou.loc,

@@ -7,7 +7,15 @@ from dataclasses import dataclass, field
 from tc_emulator import syntax as st
 from tc_emulator.bitwise import bitwise_result_type, bitwise_value
 from tc_emulator.errors import ExecutionError
-from tc_emulator.memory import Cell, FBArray, Frame, InterfaceSlot, Lifetime, MemoryOwner
+from tc_emulator.memory import (
+    Cell,
+    FBArray,
+    Frame,
+    InterfaceSlot,
+    Lifetime,
+    MemoryOwner,
+    ReferenceSlot,
+)
 from tc_emulator.standard_blocks import STANDARD_BLOCK_NAMES, StandardBlockState
 from tc_emulator.standard_functions import bind_arguments, evaluate, selection_index
 from tc_emulator.timers import TIMER_NAMES, TimerState
@@ -17,6 +25,7 @@ from tc_emulator.types import (
     EnumType,
     FBArrayType,
     InterfaceType,
+    ReferenceType,
     StringType,
     TypeSpec,
     Value,
@@ -102,15 +111,26 @@ class Engine:
                     "Instance nesting limit exceeded", pou.loc, (pou.name,)
                 ) from error
 
+        for frame in (*self.global_frames.values(), *self.program_frames.values()):
+            self.initialize_owned(frame)
+
     def _variable(
         self, decl: st.VarDecl, lifetime: Lifetime | None = None
-    ) -> Cell | Frame | FBArray | InterfaceSlot | None:
+    ) -> Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None:
         if decl.section == "VAR_IN_OUT":
             return None
+        if isinstance(decl.type_name, ReferenceType):
+            return ReferenceSlot(decl.type_name)
         if isinstance(decl.type_name, InterfaceType):
             return InterfaceSlot(decl.type_name)
         if is_value_type(decl.type_name):
-            return Cell(decl.type_name, initial_value(decl), self.owner, read_only=decl.constant)
+            return Cell(
+                decl.type_name,
+                initial_value(decl),
+                self.owner,
+                read_only=decl.constant,
+                lifetime=lifetime,
+            )
         if isinstance(decl.type_name, FBArrayType):
             return FBArray(
                 decl.type_name,
@@ -148,7 +168,7 @@ class Engine:
             frame.standard = StandardBlockState(pou.name)
         if pou.return_type is not None:
             frame.slots[pou.result_name] = Cell(
-                pou.return_type, default_value(pou.return_type), self.owner
+                pou.return_type, default_value(pou.return_type), self.owner, lifetime=lifetime
             )
         return frame
 
@@ -158,6 +178,64 @@ class Engine:
         frame.method_owner = owner
         frame.slots.update(owner.method_instances.get(pou.name, {}))
         return frame
+
+    def initialize_storage(self, storage) -> None:
+        if isinstance(storage, Frame):
+            self.initialize_owned(storage)
+        elif isinstance(storage, FBArray):
+            for frame in storage.items:
+                self.initialize_owned(frame)
+
+    def initialize_owned(self, frame: Frame) -> None:
+        """Bind persistent declarations only after the entire owned tree exists."""
+        if frame.initialized:
+            return
+        frame.initialized = True
+        for decl in self.registry.variables_for(frame.pou):
+            if decl.section != "VAR_TEMP":
+                self.initialize_storage(frame.slots.get(decl.name))
+        if frame.pou.kind == "FUNCTION_BLOCK":
+            for owner in self.registry.lineages.get(frame.pou.name, (frame.pou.name,)):
+                lexical = Frame(
+                    self.registry[owner], {}, lifetime=frame.lifetime, method_owner=frame
+                )
+                self.initialize_references(lexical, {"VAR", "VAR_INPUT"})
+        elif frame.pou.kind in {"PROGRAM", "GVL"}:
+            self.initialize_references(frame, {"VAR", "VAR_INPUT"})
+        for method_name, slots in frame.method_instances.items():
+            method = Frame(
+                self.registry[method_name], slots, lifetime=frame.lifetime, method_owner=frame
+            )
+            for storage in slots.values():
+                self.initialize_storage(storage)
+            self.initialize_references(method, {"VAR_INST"})
+
+    def initialize_references(
+        self, frame: Frame, sections: set[str], ctx: Context | None = None, *, supplied=()
+    ) -> None:
+        for decl in frame.pou.variables:
+            if (
+                isinstance(decl.type_name, ReferenceType)
+                and decl.section in sections
+                and decl.initial is not None
+                and decl.name not in supplied
+            ):
+                slot = self.resolve(st.Reference((decl.name,), decl.loc), frame, ctx)
+                slot.bind(self.reference_value(decl.initial, frame, ctx), decl.loc)
+
+    def reference_value(
+        self, expr: st.Expr, frame: Frame, ctx: Context | None = None
+    ) -> Cell | None:
+        if isinstance(expr, st.Literal):
+            return None
+        target = self.resolve(expr, frame, ctx)
+        if isinstance(target, ReferenceSlot):
+            return target.capture(expr.loc)
+        if isinstance(target, Cell):
+            if not target._lifetime.alive:
+                raise ExecutionError("Expired reference target", expr.loc)
+            return target
+        raise ExecutionError("Reference binding requires value storage", expr.loc)
 
     def owner_has(self, frame: Frame, name: str) -> bool:
         """Only the executing declaration's lexical fields precede globals."""
@@ -170,7 +248,7 @@ class Engine:
 
     def resolve(
         self, ref: st.LValue, frame: Frame, ctx: Context | None = None
-    ) -> Cell | Frame | FBArray | InterfaceSlot:
+    ) -> Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot:
         if isinstance(ref, (st.This, st.Super)):
             return frame.method_owner or frame
         if id(ref) in self.registry.bit_accesses:
@@ -185,6 +263,8 @@ class Engine:
                     and ref.name in frame.slots
                     else self.resolve(ref.base, frame, ctx)
                 )
+                if isinstance(base, ReferenceSlot):
+                    base = base.capture(ref.loc, dereference=True)
                 if isinstance(base, Frame):
                     if ref.name not in base.slots:
                         raise ValueError(f"Unknown variable {ref.name}")
@@ -197,6 +277,8 @@ class Engine:
                 raise ExecutionError(str(error), ref.loc) from error
         if isinstance(ref, st.Index):
             base = self.resolve(ref.base, frame, ctx)
+            if isinstance(base, ReferenceSlot):
+                base = base.capture(ref.loc, dereference=True)
             if not isinstance(base, (Cell, FBArray)):
                 raise ExecutionError("Expected array storage", ref.loc)
             try:
@@ -206,7 +288,9 @@ class Engine:
                 raise ExecutionError(str(error), ref.loc) from error
         root = ref.parts[0]
         if root in frame.slots:
-            current: Cell | Frame | FBArray | InterfaceSlot | None = frame.slots[root]
+            current: Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None = frame.slots[
+                root
+            ]
         elif self.owner_has(frame, root):
             current = frame.method_owner.slots[root]
         elif root in self.global_frames:
@@ -220,6 +304,8 @@ class Engine:
                 raise ExecutionError(f"{message} variable {root}", ref.loc)
             current = self.global_frames[candidates[0]].slots[root]
         for part in ref.parts[1:]:
+            if isinstance(current, ReferenceSlot):
+                current = current.capture(ref.loc, dereference=True)
             if isinstance(current, Cell):
                 try:
                     current = current._field(part)
@@ -235,6 +321,8 @@ class Engine:
 
     def storage(self, ref: st.LValue, frame: Frame, ctx: Context | None = None) -> Cell:
         result = self.resolve(ref, frame, ctx)
+        if isinstance(result, ReferenceSlot):
+            result = result.capture(ref.loc, dereference=True)
         if not isinstance(result, Cell):
             raise ExecutionError("Expected a stored variable", ref.loc)
         return result
@@ -310,6 +398,7 @@ class Engine:
         ctx.stack.append(frame.pou.name)
         temporary_lifetime = Lifetime()
         try:
+            self.initialize_owned(persistent or frame)
             for decl in self.registry.variables_for(frame.pou):
                 if decl.section == "VAR_TEMP":
                     frame.slots[decl.name] = self._variable(decl, temporary_lifetime)
@@ -317,7 +406,9 @@ class Engine:
                         persistent.slots[decl.name] = frame.slots[decl.name]
             input_slots = persistent.slots if persistent is not None else frame.slots
             for name, value in inputs.items():
-                if isinstance(value, Cell):
+                if isinstance(input_slots[name], ReferenceSlot):
+                    input_slots[name].bind(value, loc)
+                elif isinstance(value, Cell):
                     input_slots[name] = value
                 else:
                     target = input_slots[name]
@@ -327,6 +418,15 @@ class Engine:
                     if not isinstance(target, Cell):
                         raise ExecutionError(f"Invalid input {name}", loc)
                     target._write(value, loc)
+            for decl in self.registry.variables_for(frame.pou):
+                if decl.section == "VAR_TEMP":
+                    self.initialize_storage(frame.slots[decl.name])
+            sections = (
+                {"VAR_TEMP"}
+                if frame.pou.kind in {"FUNCTION_BLOCK", "PROGRAM"}
+                else {"VAR", "VAR_INPUT"}
+            )
+            self.initialize_references(frame, sections, ctx, supplied=inputs)
             try:
                 if frame.timer is not None:
                     ctx.tick(loc)
@@ -359,10 +459,16 @@ class Engine:
             ctx.stack.pop()
 
     def _call(self, call: st.Call, caller: Frame, ctx: Context) -> Value | None:
+        if id(call) in self.registry.valid_reference_calls:
+            ctx.tick(call.loc)
+            operand = self.registry.valid_reference_calls[id(call)]
+            return self.resolve(operand, caller, ctx).valid
         if id(call) in self.registry.bound_calls:
             reference, dimension_expr, upper = self.registry.bound_calls[id(call)]
             ctx.tick(call.loc)
             array = self.resolve(reference, caller, ctx)
+            if isinstance(array, ReferenceSlot):
+                array = array.capture(call.loc, dereference=True)
             kind = canonical_type(array.type_name)
             dimension = self.expression(dimension_expr, caller, ctx)
             if type(dimension) is not int or not 1 <= dimension <= len(kind.bounds):
@@ -426,6 +532,8 @@ class Engine:
                 outputs.append((name, self.storage(argument.value, caller, ctx)))
             elif decl.section == "VAR_IN_OUT":
                 inputs[name] = self.storage(argument.value, caller, ctx)
+            elif isinstance(decl.type_name, ReferenceType):
+                inputs[name] = self.reference_value(argument.value, caller, ctx)
             elif isinstance(decl.type_name, InterfaceType):
                 inputs[name] = self.interface_value(argument.value, caller, ctx)
             else:
@@ -434,7 +542,7 @@ class Engine:
             # Check all evaluated values before allocating fresh method storage.
             for name, value in inputs.items():
                 if variables[name].section == "VAR_INPUT" and not isinstance(
-                    variables[name].type_name, InterfaceType
+                    variables[name].type_name, (InterfaceType, ReferenceType)
                 ):
                     try:
                         inputs[name] = check_value(variables[name].type_name, value)
@@ -544,6 +652,8 @@ class Engine:
                 value = self._call(expr, frame, ctx)
                 if value is None:
                     raise ExecutionError("FB cannot be used as an expression", expr.loc)
+                if id(expr) in self.registry.valid_reference_calls:
+                    return value, "BOOL"
                 if id(expr) in self.registry.builtin_calls:
                     return value, self.registry.builtin_calls[id(expr)]
                 if id(expr) in self.registry.bound_calls:
@@ -574,6 +684,10 @@ class Engine:
                 return (target is None if expr.op == "=" else target is not None), "BOOL"
             if isinstance(expr, st.Binary):
                 left, left_type = self._typed_expression(expr.left, frame, ctx)
+                if expr.op in {"AND_THEN", "OR_ELSE"}:
+                    if (expr.op == "AND_THEN" and not left) or (expr.op == "OR_ELSE" and left):
+                        return left, "BOOL"
+                    return self.expression(expr.right, frame, ctx), "BOOL"
                 right, right_type = self._typed_expression(expr.right, frame, ctx)
                 if expr.op in {"AND", "OR", "XOR"}:
                     result_type = bitwise_result_type(expr.op, left_type, right_type)
@@ -637,7 +751,10 @@ class Engine:
     def statements(self, body: tuple[st.Statement, ...], frame: Frame, ctx: Context) -> None:
         for statement in body:
             ctx.tick(statement.loc)
-            if isinstance(statement, st.Assign):
+            if isinstance(statement, st.RefAssign):
+                target = self.resolve(statement.target, frame, ctx)
+                target.bind(self.reference_value(statement.value, frame, ctx), statement.loc)
+            elif isinstance(statement, st.Assign):
                 prop = self.registry.property_writes.get(id(statement.target))
                 if prop is not None:
                     receiver, name = prop
@@ -658,6 +775,8 @@ class Engine:
                             self.interface_value(statement.value, frame, ctx), statement.loc
                         )
                     else:
+                        if isinstance(target, ReferenceSlot):
+                            target = target.capture(statement.loc, dereference=True)
                         target._write(self.expression(statement.value, frame, ctx), statement.loc)
             elif isinstance(statement, st.CallStatement):
                 self._call(statement.call, frame, ctx)

@@ -33,7 +33,9 @@ from .syntax import (
     Pou,
     Program,
     Property,
+    RefAssign,
     Reference,
+    ReferenceSpec,
     Return,
     Statement,
     StringBounds,
@@ -58,6 +60,7 @@ from .types import (
     FBArrayType,
     InterfaceType,
     OpenArrayType,
+    ReferenceType,
     Scalar,
     StringType,
     StructField,
@@ -96,6 +99,7 @@ class Registry(dict[str, Pou]):
         self.interfaces: dict[str, InterfaceDecl] = {}
         self.prototype_pous: dict[str, Pou] = {}
         self.implementers: dict[str, set[str]] = {}
+        self.valid_reference_calls: dict[int, LValue] = {}
         self.interface_comparisons: dict[int, LValue] = {}
         self.global_lists: dict[str, bool] = {}
         self.global_variables: dict[str, tuple[str, ...]] = {}
@@ -323,6 +327,7 @@ class _Validator:
         self.reject_cycles(self.contains, "FB containment")
         for pou in self.pous.values():
             try:
+                self.reference_initializers(pou)
                 self.statements(pou.body, pou, 0)
             except RecursionError as error:
                 raise ValidationError("Validation nesting limit exceeded", pou.loc) from error
@@ -460,6 +465,88 @@ class _Validator:
             self.fail("Interface initializer must be literal integer 0", var.loc)
         return replace(var, type_name=InterfaceType(name), default=None)
 
+    def reference_variable(self, var: VarDecl) -> VarDecl:
+        if var.constant or var.section not in {"VAR", "VAR_INPUT", "VAR_TEMP", "VAR_INST"}:
+            self.fail(
+                "Reference storage requires nonconstant VAR, VAR_INPUT, VAR_TEMP or VAR_INST",
+                var.loc,
+            )
+        target = self.resolve_spec(var.type_name.target, var.loc)
+        if not is_value_type(target):
+            self.fail("Reference target must be a value type", var.loc)
+        return replace(var, type_name=ReferenceType(target), default=None)
+
+    def reference_source(self, expr: Expr, expected: ReferenceType, pou: Pou) -> None:
+        if self.literal_zero(expr):
+            return
+        if not isinstance(expr, (Reference, Index, Member, BitAccess)):
+            self.fail("Reference binding requires writable storage or literal integer 0", expr.loc)
+        actual = self.raw_reference(expr, pou, writable=True)
+        if id(expr) in self.pous.bit_accesses:
+            self.fail("Bit locations cannot bind references", expr.loc)
+        if isinstance(actual, ReferenceType):
+            actual = actual.target
+        if not same_type(expected.target, actual):
+            self.fail(f"Reference requires exact type {expected.target}, got {actual}", expr.loc)
+
+    def reference_initializers(self, pou: Pou) -> None:
+        for var in pou.variables:
+            if not isinstance(var.type_name, ReferenceType) or var.initial is None:
+                continue
+            self.reference_source(var.initial, var.type_name, pou)
+            if self.literal_zero(var.initial):
+                continue
+            if var.section == "VAR_INPUT" and pou.kind in {"FUNCTION", "METHOD"}:
+                self.fail("Reference input default must be literal integer 0", var.loc)
+            persistent = var.section == "VAR_INST" or (
+                pou.kind in {"GVL", "PROGRAM", "FUNCTION_BLOCK"} and var.section != "VAR_TEMP"
+            )
+
+            def inspect(expr):
+                if isinstance(self.raw_reference(expr, pou), ReferenceType):
+                    self.fail(
+                        "Reference initializer cannot pass through another reference", expr.loc
+                    )
+                if isinstance(expr, Index):
+                    for index in expr.indices:
+                        _, kind = self.constant_expression(index, pou)
+                        self.require(kind, "INTEGER", index.loc)
+                    inspect(expr.base)
+                elif isinstance(expr, Member):
+                    if isinstance(expr.base, (This, Super)):
+                        owner = self.reference(expr.base, pou)
+                        binding = self.fb_variable(owner, expr.name)
+                        check(binding[0], binding[1], expr.loc)
+                    else:
+                        inspect(expr.base)
+                elif isinstance(expr, Reference):
+                    binding = self.variable_binding(expr, pou)
+                    if binding is not None:
+                        check(binding[0], binding[1], expr.loc)
+                    elif (
+                        persistent
+                        and expr.parts[0] == pou.result_name
+                        and pou.kind in _RESULT_KINDS
+                    ):
+                        self.fail(
+                            "Persistent reference initializer cannot target invocation storage",
+                            expr.loc,
+                        )
+                    if len(expr.parts) > 1:
+                        inspect(Reference(expr.parts[:-1], expr.loc))
+
+            def check(owner, target, loc):
+                if not persistent:
+                    return
+                if target.section in {"VAR_TEMP", "VAR_IN_OUT"} or (
+                    owner.kind in _RESULT_KINDS and target.section != "VAR_INST"
+                ):
+                    self.fail(
+                        "Persistent reference initializer cannot target invocation storage", loc
+                    )
+
+            inspect(var.initial)
+
     def interface_source(self, expr: Expr, expected: InterfaceType, pou: Pou) -> None:
         if self.literal_zero(expr):
             return
@@ -549,7 +636,16 @@ class _Validator:
                 names.add(var.name)
                 if var.initial is not None and var.section != "VAR_INPUT":
                     self.fail("Only interface VAR_INPUT may have a default", var.loc)
-                if isinstance(var.type_name, InterfaceType) or (
+                if isinstance(var.type_name, (ReferenceSpec, ReferenceType)):
+                    if var.initial is not None and not self.literal_zero(var.initial):
+                        self.fail("Reference input default must be literal integer 0", var.loc)
+                    target = var.type_name.target
+                    if isinstance(target, StringBounds):
+                        target = self.resolve_string_bounds(target, scope)
+                    elif isinstance(target, ArrayBounds):
+                        target = self.resolve_array_bounds(target, scope)
+                    var = self.reference_variable(replace(var, type_name=ReferenceType(target)))
+                elif isinstance(var.type_name, InterfaceType) or (
                     isinstance(var.type_name, str) and var.type_name in self.pous.interfaces
                 ):
                     if var.section != "VAR_INPUT":
@@ -706,6 +802,8 @@ class _Validator:
         self.check_constant_dependencies()
 
         def prepare(spec, pou=None):
+            if isinstance(spec, (ReferenceSpec, ReferenceType)):
+                return ReferenceType(prepare(spec.target, pou))
             if isinstance(spec, StringBounds):
                 return self.resolve_string_bounds(spec, pou)
             if isinstance(spec, (OpenArrayBounds, OpenArrayType)):
@@ -1297,7 +1395,9 @@ class _Validator:
                     and kind in self.pous.interfaces
                 ):
                     continue
-                if isinstance(kind, OpenArrayType):
+                if isinstance(kind, ReferenceType):
+                    measure(kind.target, variable.loc)
+                elif isinstance(kind, OpenArrayType):
                     measure(kind.element_type, variable.loc)
                 else:
                     measure(kind, variable.loc)
@@ -1342,7 +1442,7 @@ class _Validator:
                     child_instances, child_leaves = storage(definitions[child_name])
                     instances += multiplier * (1 + child_instances)
                     leaves += multiplier * child_leaves
-                elif isinstance(kind, InterfaceType) or (
+                elif isinstance(kind, (InterfaceType, ReferenceType)) or (
                     isinstance(kind, str) and kind in self.pous.interfaces
                 ):
                     leaves += 1
@@ -1501,7 +1601,9 @@ class _Validator:
             kind = var.type_name
             target_name = kind.element_type if isinstance(kind, FBArrayType) else kind
             target = self.pous.get(target_name) if isinstance(target_name, str) else None
-            if isinstance(kind, InterfaceType) or (
+            if isinstance(kind, ReferenceType):
+                var = self.reference_variable(var)
+            elif isinstance(kind, InterfaceType) or (
                 isinstance(kind, str) and kind in self.pous.interfaces
             ):
                 var = self.interface_variable(var)
@@ -1752,6 +1854,12 @@ class _Validator:
                     else check_value(result_type, result)
                 ), result_type
             if isinstance(expr, Binary):
+                if expr.op in {"AND_THEN", "OR_ELSE"}:
+                    self.constant_expression_type(expr, pou)
+                    left, _ = self.constant_expression(expr.left, pou)
+                    if (expr.op == "AND_THEN" and not left) or (expr.op == "OR_ELSE" and left):
+                        return left, "BOOL"
+                    return self.constant_expression(expr.right, pou)[0], "BOOL"
                 left, left_type = self.constant_expression(expr.left, pou)
                 right, right_type = self.constant_expression(expr.right, pou)
                 left_type, right_type = canonical_type(left_type), canonical_type(right_type)
@@ -1772,6 +1880,50 @@ class _Validator:
         except (TypeError, ValueError, ZeroDivisionError, OverflowError) as error:
             self.fail(str(error), expr.loc)
         raise AssertionError("unreachable")
+
+    def constant_expression_type(self, expr: Expr, pou: Pou | None) -> TypeSpec:
+        """Check skipped constant operands without evaluating arithmetic operators."""
+        if isinstance(expr, Index):
+            kind = canonical_type(self.constant_expression_type(expr.base, pou))
+            if not isinstance(kind, ArrayType) or len(expr.indices) != len(kind.bounds):
+                self.fail("Constant array index has the wrong type or dimension", expr.loc)
+            for index in expr.indices:
+                self.require(self.constant_expression_type(index, pou), "INTEGER", index.loc)
+            return canonical_type(kind.element_type)
+        if isinstance(expr, Member):
+            if isinstance(expr.base, (This, Super)):
+                return self.constant_expression_type(
+                    Reference((expr.name,), expr.loc),
+                    self.constant_owner(pou, expr.loc, base=isinstance(expr.base, Super)),
+                )
+            kind = self.constant_expression_type(expr.base, pou)
+            if canonical_type(kind) in INTEGER_TYPES:
+                self.bit_index(Reference((expr.name,), expr.loc), kind, pou)
+                return "BOOL"
+            return canonical_type(self.field_type(kind, expr.name, expr.loc))
+        if isinstance(expr, BitAccess):
+            kind = self.constant_expression_type(expr.base, pou)
+            self.bit_index(expr.index, kind, pou)
+            return "BOOL"
+        if isinstance(expr, Binary):
+            return self.binary_type(
+                expr,
+                canonical_type(self.constant_expression_type(expr.left, pou)),
+                canonical_type(self.constant_expression_type(expr.right, pou)),
+            )
+        if isinstance(expr, Unary):
+            if (
+                expr.op == "-"
+                and isinstance(expr.operand, Literal)
+                and expr.operand.type_name is None
+                and type(expr.operand.value) is int
+                and expr.operand.value == 2**63
+            ):
+                return "INTEGER"
+            return self.unary_type(
+                expr, canonical_type(self.constant_expression_type(expr.operand, pou))
+            )
+        return self.constant_expression(expr, pou)[1]
 
     @staticmethod
     def constant_binary(op: str, left: Value, right: Value, kind: TypeSpec) -> Value:
@@ -1856,6 +2008,12 @@ class _Validator:
         return (receiver, prop) if prop is not None else None
 
     def reference(
+        self, ref: LValue, pou: Pou, *, writable: bool = False, allow_property: bool = False
+    ) -> TypeSpec:
+        kind = self.raw_reference(ref, pou, writable=writable, allow_property=allow_property)
+        return kind.target if isinstance(kind, ReferenceType) else kind
+
+    def raw_reference(
         self, ref: LValue, pou: Pou, *, writable: bool = False, allow_property: bool = False
     ) -> TypeSpec:
         if isinstance(ref, (This, Super)):
@@ -2063,6 +2221,10 @@ class _Validator:
         raise AssertionError("unreachable")
 
     def binary_type(self, expr: Binary, left: TypeSpec, right: TypeSpec) -> TypeSpec:
+        if expr.op in {"AND_THEN", "OR_ELSE"}:
+            self.require(left, "BOOL", expr.left.loc)
+            self.require(right, "BOOL", expr.right.loc)
+            return "BOOL"
         if isinstance(left, StringType) or isinstance(right, StringType):
             if (
                 isinstance(left, StringType)
@@ -2153,6 +2315,16 @@ class _Validator:
             if as_expression and target.return_type is None:
                 self.fail("Void method cannot be used as an expression", call.loc)
         elif simple and self.variable_binding(call.target, pou) is None:
+            if name == "__ISVALIDREF":
+                if len(call.arguments) != 1 or any(arg.name or arg.mode for arg in call.arguments):
+                    self.fail("__ISVALIDREF requires one positional reference", call.loc)
+                operand = call.arguments[0].value
+                if not isinstance(operand, (Reference, Index, Member)) or not isinstance(
+                    self.raw_reference(operand, pou), ReferenceType
+                ):
+                    self.fail("__ISVALIDREF requires a reference variable", operand.loc)
+                self.pous.valid_reference_calls[id(call)] = operand
+                return "BOOL"
             if name in _BOUND_OPERATORS:
                 return self.bound_call(call, pou, name)
             if is_standard_function(name):
@@ -2234,6 +2406,8 @@ class _Validator:
                         f"Parameter {parameter.name} requires exact type {parameter.type_name}",
                         arg.loc,
                     )
+            elif isinstance(parameter.type_name, ReferenceType):
+                self.reference_source(arg.value, parameter.type_name, pou)
             elif isinstance(parameter.type_name, InterfaceType):
                 self.interface_source(arg.value, parameter.type_name, pou)
             else:
@@ -2243,6 +2417,10 @@ class _Validator:
                 parameter.section == "VAR_INPUT"
                 and (
                     target.kind == "FUNCTION"
+                    and not (
+                        isinstance(parameter.type_name, ReferenceType)
+                        and self.literal_zero(parameter.initial)
+                    )
                     or (target.kind == "METHOD" and parameter.initial is None)
                 )
             )
@@ -2267,7 +2445,12 @@ class _Validator:
 
     def statements(self, body: tuple[Statement, ...], pou: Pou, loops: int) -> None:
         for statement in body:
-            if isinstance(statement, Assign):
+            if isinstance(statement, RefAssign):
+                target = self.raw_reference(statement.target, pou, writable=True)
+                if not isinstance(target, ReferenceType):
+                    self.fail("REF= requires a reference destination", statement.loc)
+                self.reference_source(statement.value, target, pou)
+            elif isinstance(statement, Assign):
                 target = self.reference(statement.target, pou, writable=True, allow_property=True)
                 if isinstance(target, InterfaceType):
                     self.interface_source(statement.value, target, pou)

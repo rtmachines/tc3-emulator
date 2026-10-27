@@ -15,6 +15,7 @@ from tc_emulator.types import (
     ArrayType,
     FBArrayType,
     InterfaceType,
+    ReferenceType,
     StructType,
     StructValue,
     TypeSpec,
@@ -28,9 +29,9 @@ class MemoryOwner(Protocol):
 
 
 class Cell:
-    """A checked PLC variable usable as a VAR_IN_OUT argument."""
+    """Checked PLC storage usable as a VAR_IN_OUT or reference input argument."""
 
-    __slots__ = ("_type_name", "_value", "_owner", "_items", "_members", "_read_only")
+    __slots__ = ("_type_name", "_value", "_owner", "_items", "_members", "_read_only", "_lifetime")
 
     def __init__(
         self,
@@ -39,23 +40,31 @@ class Cell:
         owner: MemoryOwner,
         *,
         read_only: bool = False,
+        lifetime: Lifetime | None = None,
     ) -> None:
         normalized = check_value(type_name, value)
         self._type_name = type_name
         self._owner = owner
         self._read_only = read_only
+        self._lifetime = lifetime or Lifetime()
         self._value = None
         self._items: tuple[Cell, ...] | None = None
         self._members: dict[str, Cell] | None = None
         kind = self._storage_type()
         if isinstance(kind, ArrayType):
             self._items = tuple(
-                Cell(kind.element_type, item, owner, read_only=read_only)
+                Cell(kind.element_type, item, owner, read_only=read_only, lifetime=self._lifetime)
                 for item in self._flatten(normalized, len(kind.bounds))
             )
         elif isinstance(kind, StructType):
             self._members = {
-                item.name: Cell(item.type_name, normalized[item.name], owner, read_only=read_only)
+                item.name: Cell(
+                    item.type_name,
+                    normalized[item.name],
+                    owner,
+                    read_only=read_only,
+                    lifetime=self._lifetime,
+                )
                 for item in kind.fields
             }
         else:
@@ -193,7 +202,9 @@ class BitCell(Cell):
 
     def __init__(self, parent: Cell, index: int) -> None:
         read_bit(parent.value, parent.type_name, index)
-        super().__init__("BOOL", False, parent._owner, read_only=parent.read_only)
+        super().__init__(
+            "BOOL", False, parent._owner, read_only=parent.read_only, lifetime=parent._lifetime
+        )
         self._parent = parent
         self._index = index
 
@@ -273,24 +284,56 @@ class InterfaceSlot:
 
 
 @dataclass
+class ReferenceSlot:
+    """A data binding whose target keeps its original storage lifetime."""
+
+    type_name: ReferenceType
+    target: Cell | None = None
+
+    @property
+    def valid(self) -> bool:
+        return self.target is not None and self.target._lifetime.alive
+
+    def capture(self, loc: Location, *, dereference: bool = False) -> Cell | None:
+        if self.target is not None and not self.target._lifetime.alive:
+            raise ExecutionError("Expired reference target", loc)
+        if dereference and self.target is None:
+            raise ExecutionError("Null reference target", loc)
+        return self.target
+
+    def bind(self, target: Cell | None, loc: Location) -> None:
+        if target is not None and not target._lifetime.alive:
+            raise ExecutionError("Expired reference target", loc)
+        self.target = target
+
+    def inspect(self) -> dict[str, object]:
+        return {
+            "reference": str(self.type_name.target),
+            "target": str(self.target.type_name) if self.target is not None else None,
+            "valid": self.valid,
+        }
+
+
+@dataclass
 class Frame:
     """One invocation's locals or one persistent FB instance."""
 
     pou: Pou
-    slots: dict[str, Cell | Frame | FBArray | InterfaceSlot | None]
+    slots: dict[str, Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None]
     lifetime: Lifetime = field(default_factory=Lifetime)
+    initialized: bool = False
     timer: TimerState | None = None
     standard: StandardBlockState | None = None
     method_owner: Frame | None = None
-    method_instances: dict[str, dict[str, Cell | Frame | FBArray | InterfaceSlot | None]] = field(
-        default_factory=dict
-    )
+    method_instances: dict[
+        str, dict[str, Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None]
+    ] = field(default_factory=dict)
 
     def inspect(self) -> dict[str, object]:
         def snapshot(slots):
             return {
                 name: value.inspect()
-                if isinstance(value, (Frame, FBArray, InterfaceSlot))
+                if isinstance(value, (Frame, FBArray, InterfaceSlot, ReferenceSlot))
                 else value.value
                 if isinstance(value, Cell)
                 else None

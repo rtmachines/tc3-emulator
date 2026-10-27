@@ -332,6 +332,8 @@ def canonical_type(type_name: TypeSpec) -> TypeSpec:
         return ArrayType(type_name.bounds, canonical_type(type_name.element_type))
     if isinstance(type_name, OpenArrayType):
         return OpenArrayType(type_name.rank, canonical_type(type_name.element_type))
+    if isinstance(type_name, ReferenceType):
+        return ReferenceType(canonical_type(type_name.target))
     return type_name
 
 

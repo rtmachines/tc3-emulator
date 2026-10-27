@@ -2,8 +2,9 @@
 
 import pytest
 
+from tc_emulator import Runtime
 from tc_emulator import syntax as st
-from tc_emulator.errors import ParseError
+from tc_emulator.errors import ExecutionError, ParseError, ValidationError
 from tc_emulator.loader import load_files
 
 
@@ -82,3 +83,44 @@ def test_reference_parse_errors_keep_xml_section_coordinates(
     with pytest.raises(ParseError) as caught:
         load_files([path])
     assert caught.value.loc == st.Location(f"{path}:{suffix}", line, column)
+
+
+def test_native_reference_initializers_and_execution_error_locations(tmp_path):
+    globals_path = tmp_path / "Shared.TcGVL"
+    globals_path.write_text(
+        '<TcPlcObject><GVL Name="Shared"><Declaration><![CDATA['
+        "VAR_GLOBAL ref : REFERENCE TO INT := data; data : INT := 7; END_VAR"
+        "]]></Declaration></GVL></TcPlcObject>",
+        encoding="utf-8",
+    )
+    path = tmp_path / "Consumer.TcPOU"
+    path.write_text(
+        '<TcPlcObject><POU Name="Consumer"><Declaration><![CDATA['
+        "FUNCTION_BLOCK Consumer\nVAR_OUTPUT value : INT; END_VAR"
+        "]]></Declaration><Implementation><ST><![CDATA["
+        "value := Shared.ref;\nShared.ref REF= 0;\nvalue := Shared.ref;"
+        "]]></ST></Implementation></POU></TcPlcObject>",
+        encoding="utf-8",
+    )
+    rt = Runtime.from_files([path, globals_path])
+    fb = rt.instantiate("Consumer")
+    with pytest.raises(ExecutionError, match="Null") as caught:
+        fb.call()
+    assert fb.output("value") == 7
+    assert caught.value.loc.source == f"{path}:Implementation"
+    assert caught.value.loc.line == 3
+    assert caught.value.stack == ("CONSUMER",)
+
+
+def test_native_reference_binding_validation_error_coordinates(tmp_path):
+    path = tmp_path / "Bad.TcPOU"
+    path.write_text(
+        '<TcPlcObject><POU Name="Bad"><Declaration><![CDATA['
+        "FUNCTION_BLOCK Bad\nVAR r : REFERENCE TO INT; x : DINT; END_VAR"
+        "]]></Declaration><Implementation><ST><![CDATA[\nr REF= x;"
+        "]]></ST></Implementation></POU></TcPlcObject>",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValidationError, match="exact type") as caught:
+        Runtime.from_files([path])
+    assert caught.value.loc == st.Location(f"{path}:Implementation", 2, 8)
