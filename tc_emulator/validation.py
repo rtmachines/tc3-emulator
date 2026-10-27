@@ -39,6 +39,7 @@ from .syntax import (
     StringBounds,
     StructDecl,
     StructInitializer,
+    Super,
     This,
     TypeDecl,
     Unary,
@@ -83,6 +84,7 @@ _INTEGER_CATEGORIES = INTEGER_TYPES | {"INTEGER"}
 _NUMERIC_CATEGORIES = _INTEGER_CATEGORIES | FLOAT_TYPES
 _BUILTIN_BLOCK_NAMES = TIMER_NAMES | STANDARD_BLOCK_NAMES
 _BOUND_OPERATORS = {"LOWER_BOUND", "UPPER_BOUND"}
+_ACCESS = {"PRIVATE": 0, "PROTECTED": 1, "PUBLIC": 2}
 
 
 class Registry(dict[str, Pou]):
@@ -104,6 +106,51 @@ class Registry(dict[str, Pou]):
         self.property_writes: dict[int, tuple[LValue | None, str]] = {}
         self.bound_calls: dict[int, tuple[LValue, Expr, bool]] = {}
         self.bit_accesses: dict[int, tuple[LValue, int]] = {}
+        self.bases: dict[str, str | None] = {}
+        self.lineages: dict[str, tuple[str, ...]] = {}
+        self.effective_methods: dict[tuple[str, str], str] = {}
+        self.super_calls: dict[int, str] = {}
+        self.static_dispatch: set[int] = set()
+
+    @staticmethod
+    def lexical_owner(pou: Pou) -> str | None:
+        return pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
+
+    def variables_for(self, pou: Pou) -> tuple[VarDecl, ...]:
+        """Keep resolved declarations in their scopes; inherit only persistent fields."""
+        if pou.kind != "FUNCTION_BLOCK":
+            return pou.variables
+        return tuple(
+            var
+            for owner in self.lineages.get(pou.name, (pou.name,))
+            for var in self[owner].variables
+            if owner == pou.name or var.section != "VAR_TEMP"
+        )
+
+    def instance_methods(self, pou: Pou) -> tuple[Pou, ...]:
+        """Include overridden ancestors because SUPER can still execute their banks."""
+        return tuple(
+            self[method.name]
+            for owner in self.lineages.get(pou.name, (pou.name,))
+            for method in self.get(owner, pou).methods
+        )
+
+    def method_for(self, owner: str, name: str) -> Pou | None:
+        qualified = self.effective_methods.get((owner, name), f"{owner}.{name}")
+        return self.get(qualified)
+
+    def dispatch(self, owner: str, declaration: Pou, *, static: bool = False) -> Pou:
+        """Resolve a checked member against its concrete receiver's effective table."""
+        if static or declaration.access == "PRIVATE":
+            return declaration
+        if declaration.kind == "METHOD":
+            target = self.method_for(owner, declaration.result_name)
+            assert target is not None
+            return target
+        prop = self.properties[owner, declaration.property_name]
+        target = prop.setter if declaration.kind == "PROPERTY_SET" else prop.getter
+        assert target is not None
+        return target
 
 
 def validate(program: Program) -> Registry:
@@ -182,6 +229,8 @@ class _Validator:
             ):
                 self.fail(f"Duplicate or reserved POU name {pou.name}", pou.loc)
             self.pous[pou.name] = pou
+            if pou.extends is not None and pou.kind != "FUNCTION_BLOCK":
+                self.fail("EXTENDS requires FUNCTION_BLOCK", pou.loc)
             if pou.implements and pou.kind != "FUNCTION_BLOCK":
                 self.fail("IMPLEMENTS requires FUNCTION_BLOCK", pou.loc)
             if len(set(pou.implements)) != len(pou.implements):
@@ -190,6 +239,7 @@ class _Validator:
                 if name not in self.pous.interfaces:
                     self.fail(f"Unknown interface {name}", pou.loc)
                 self.pous.implementers[name].add(pou.name)
+        self.inheritance_graph()
         methods = []
         for owner in self.program.pous:
             if (owner.methods or owner.properties) and owner.kind != "FUNCTION_BLOCK":
@@ -203,7 +253,8 @@ class _Validator:
                     method.kind != "METHOD"
                     or method.owner != owner.name
                     or method.name != f"{owner.name}.{name}"
-                    or method.access not in {"PUBLIC", "PRIVATE"}
+                    or method.access not in {"PUBLIC", "PRIVATE", "PROTECTED"}
+                    or method.extends is not None
                     or method.methods
                     or method.properties
                 ):
@@ -215,7 +266,9 @@ class _Validator:
                 if prop.name in names or prop.name in {"FB_INIT", "FB_REINIT", "FB_EXIT"}:
                     self.fail(f"Duplicate or reserved property name {prop.name}", prop.loc)
                 names.add(prop.name)
-                if prop.access not in {"PUBLIC", "PRIVATE"} or not (prop.getter or prop.setter):
+                if prop.access not in {"PUBLIC", "PRIVATE", "PROTECTED"} or not (
+                    prop.getter or prop.setter
+                ):
                     self.fail("Invalid property access or missing accessor", prop.loc)
                 declaration_scope = Pou(
                     "PROPERTY_DECL",
@@ -234,8 +287,9 @@ class _Validator:
                         or accessor.name != f"{owner.name}.{prop.name}.{kind}"
                         or accessor.owner != owner.name
                         or accessor.property_name != prop.name
-                        or accessor.access not in {"PUBLIC", "PRIVATE"}
-                        or (prop.access == "PRIVATE" and accessor.access != "PRIVATE")
+                        or accessor.access not in {"PUBLIC", "PRIVATE", "PROTECTED"}
+                        or _ACCESS.get(accessor.access, 3) > _ACCESS[prop.access]
+                        or accessor.extends is not None
                         or accessor.methods
                         or accessor.properties
                     ):
@@ -245,6 +299,7 @@ class _Validator:
                     methods.append(accessor)
                 self.pous.properties[owner.name, prop.name] = prop
         self.program = replace(self.program, pous=(*self.program.pous, *methods))
+        self.inherited_members()
         self.resolve_bounds()
         self.check_type_graph()
         for name in self.type_declarations:
@@ -263,6 +318,7 @@ class _Validator:
             if isinstance(canonical_type(kind), (ArrayType, StructType, OpenArrayType)):
                 self.fail("Property type must be scalar, enum, TIME or STRING", prop.loc)
             self.pous.properties[key] = replace(prop, type_name=kind, getter=getter, setter=setter)
+        self.inherited_members(resolved=True)
         self.interface_contracts()
         self.reject_cycles(self.contains, "FB containment")
         for pou in self.pous.values():
@@ -272,6 +328,114 @@ class _Validator:
                 raise ValidationError("Validation nesting limit exceeded", pou.loc) from error
         self.reject_cycles(self.calls, "Recursive call")
         return self.pous
+
+    def inheritance_graph(self) -> None:
+        """Resolve forward bases without recursively walking an unchecked graph."""
+        for pou in self.program.pous:
+            if pou.kind != "FUNCTION_BLOCK":
+                continue
+            base = self.pous.get(pou.extends) if pou.extends is not None else None
+            if pou.extends is not None and (base is None or base.kind != "FUNCTION_BLOCK"):
+                self.fail(f"Invalid EXTENDS base {pou.extends}", pou.loc)
+            self.pous.bases[pou.name] = pou.extends
+        for name in self.pous.bases:
+            chain = []
+            current = name
+            while current is not None:
+                if current in chain:
+                    self.fail(f"Cyclic inheritance involving {current}", self.pous[name].loc)
+                chain.append(current)
+                current = self.pous.bases[current]
+            self.pous.lineages[name] = tuple(reversed(chain))
+            for owner in chain:
+                for interface in self.pous[owner].implements:
+                    self.pous.implementers[interface].add(name)
+
+    def inherited_members(self, *, resolved: bool = False) -> None:
+        """Build effective member tables without changing any declaration's owner."""
+        for name, lineage in self.pous.lineages.items():
+            inherited: dict[str, tuple[str, object]] = {}
+            for owner in lineage:
+                pou = self.pous[owner]
+                declarations = [(var.name, "variable", var) for var in pou.variables]
+                declarations += [
+                    (method.result_name, "method", self.pous[method.name]) for method in pou.methods
+                ]
+                declarations += [
+                    (prop.name, "property", self.pous.properties[owner, prop.name])
+                    for prop in pou.properties
+                ]
+                for member_name, kind, declaration in declarations:
+                    previous = inherited.get(member_name)
+                    if previous is not None:
+                        old_kind, old = previous
+                        if old_kind != kind or kind == "variable":
+                            self.fail(
+                                f"Inherited member collision for {member_name}", declaration.loc
+                            )
+                        if old.access == "PRIVATE":
+                            self.fail(
+                                f"Cannot override PRIVATE member {member_name}", declaration.loc
+                            )
+                        if resolved:
+                            self.check_override(old, declaration, kind)
+                    inherited[member_name] = kind, declaration
+            for member_name, (kind, declaration) in inherited.items():
+                if kind == "method":
+                    self.pous.effective_methods[name, member_name] = declaration.name
+                elif kind == "property":
+                    self.pous.properties[name, member_name] = declaration
+
+    def check_override(self, base, derived, kind: str) -> None:
+        matches = base.access == derived.access
+        if kind == "method":
+            matches = matches and same_type(base.return_type, derived.return_type)
+
+            def parameters(member):
+                return tuple(
+                    var
+                    for var in member.variables
+                    if var.section in {"VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT"}
+                )
+
+            wanted, actual = parameters(base), parameters(derived)
+            matches = matches and len(wanted) == len(actual)
+            matches = matches and all(
+                a.name == b.name
+                and a.section == b.section
+                and same_type(a.type_name, b.type_name)
+                and (
+                    (a.initial is None) == (b.initial is None) and a.default == b.default
+                    if a.section == "VAR_INPUT"
+                    else True
+                )
+                for a, b in zip(wanted, actual)
+            )
+        else:
+            matches = matches and same_type(base.type_name, derived.type_name)
+            for accessor in ("getter", "setter"):
+                a, b = getattr(base, accessor), getattr(derived, accessor)
+                matches = matches and ((a is None) == (b is None))
+                if a is not None and b is not None:
+                    matches = matches and a.access == b.access
+        if not matches:
+            self.fail(f"Override contract mismatch for {derived.name}", derived.loc)
+
+    def fb_variable(self, owner: str, name: str) -> tuple[Pou, VarDecl] | None:
+        """Return the declaring scope, not the dynamic receiver's namespace."""
+        for ancestor in reversed(self.pous.lineages.get(owner, (owner,))):
+            var = self.variables.get(ancestor, {}).get(name)
+            if var is not None and (ancestor == owner or var.section != "VAR_TEMP"):
+                return self.pous[ancestor], var
+        return None
+
+    def member_access(self, target: Pou, caller: Pou, loc: Location) -> None:
+        owner = self.pous.lexical_owner(caller)
+        permitted = target.access == "PUBLIC" or owner == target.owner
+        if target.access == "PROTECTED":
+            permitted = target.owner in self.pous.lineages.get(owner, ())
+        if not permitted:
+            self.fail(f"{target.access.title()} member {target.name} is inaccessible", loc)
 
     @staticmethod
     def literal_zero(expr: Expr) -> bool:
@@ -311,11 +475,22 @@ class _Validator:
             return
         self.fail(f"Incompatible interface binding: expected {expected}, got {actual}", expr.loc)
 
-    def call_edge(self, caller: Pou, target: Pou) -> None:
+    def call_edge(self, caller: Pou, target: Pou, *, static: bool = False) -> None:
         if target.name in self.pous.prototype_pous:
-            suffix = target.name.split(".", 1)[1]
             self.calls[caller.name].update(
-                f"{owner}.{suffix}" for owner in self.pous.implementers[target.owner]
+                self.pous.dispatch(owner, target).name
+                for owner in self.pous.implementers[target.owner]
+            )
+        elif (
+            target.owner
+            and target.kind in _MEMBER_KINDS
+            and target.access != "PRIVATE"
+            and not static
+        ):
+            self.calls[caller.name].update(
+                self.pous.dispatch(owner, target).name
+                for owner, lineage in self.pous.lineages.items()
+                if target.owner in lineage
             )
         else:
             self.calls[caller.name].add(target.name)
@@ -348,6 +523,7 @@ class _Validator:
                 or raw.name != f"{interface.name}.{suffix}"
                 or raw.kind != kind
                 or raw.implements
+                or raw.extends is not None
             ):
                 self.fail("Interface prototypes must be PUBLIC, declaration-only members", raw.loc)
             scope = replace(raw, kind="INTERFACE_DECL", owner=None)
@@ -446,7 +622,7 @@ class _Validator:
         for name, interface in self.pous.interfaces.items():
             for owner in sorted(self.pous.implementers[name]):
                 for required in interface.methods:
-                    actual = self.pous.get(f"{owner}.{required.result_name}")
+                    actual = self.pous.method_for(owner, required.result_name)
                     if actual is None or actual.kind != "METHOD" or actual.access != "PUBLIC":
                         self.fail(
                             f"{owner} must implement PUBLIC method {required.name}",
@@ -629,12 +805,17 @@ class _Validator:
             if var is not None:
                 scope = self.declaration_scope(pou, var)
                 return scope, var, tuple(fields)
+            if pou.kind == "FUNCTION_BLOCK":
+                inherited = self.fb_variable(pou.name, name)
+                if inherited is not None:
+                    owner, var = inherited
+                    return owner, var, tuple(fields)
             if name == pou.result_name and pou.kind in _RESULT_KINDS:
                 return None
             if pou.kind in _MEMBER_KINDS or pou.kind == "PROPERTY_DECL":
-                owner = self.pous[pou.owner]
-                var = self.variables[owner.name].get(name)
-                if var is not None:
+                inherited = self.fb_variable(pou.owner, name)
+                if inherited is not None:
+                    owner, var = inherited
                     if var.section in {"VAR_TEMP", "VAR_IN_OUT"}:
                         self.fail(
                             f"Owner {var.section} {name} is inaccessible from methods", ref.loc
@@ -693,11 +874,11 @@ class _Validator:
             return None
 
         def location(initial, dependencies, pou):
-            if isinstance(initial, Member) and isinstance(initial.base, This):
-                owner = self.constant_owner(pou, initial.loc)
+            if isinstance(initial, Member) and isinstance(initial.base, (This, Super)):
+                owner = self.constant_owner(pou, initial.loc, base=isinstance(initial.base, Super))
                 return location(Reference((initial.name,), initial.loc), dependencies, owner)
-            if isinstance(initial, This):
-                self.fail("THIS requires a constant member", initial.loc)
+            if isinstance(initial, (This, Super)):
+                self.fail("THIS/SUPER requires a constant member", initial.loc)
             if isinstance(initial, Reference):
                 binding = self.variable_binding(initial, pou)
                 if binding is not None:
@@ -800,12 +981,14 @@ class _Validator:
         self, expr: LValue, pou: Pou | None, path: tuple = ()
     ) -> tuple[Value, TypeSpec]:
         """Project only the scalar needed by a bound; never create its aggregate."""
-        if isinstance(expr, Member) and isinstance(expr.base, This):
+        if isinstance(expr, Member) and isinstance(expr.base, (This, Super)):
             return self.preflight_reference(
-                Reference((expr.name,), expr.loc), self.constant_owner(pou, expr.loc), path
+                Reference((expr.name,), expr.loc),
+                self.constant_owner(pou, expr.loc, base=isinstance(expr.base, Super)),
+                path,
             )
-        if isinstance(expr, This):
-            self.fail("THIS requires a constant member", expr.loc)
+        if isinstance(expr, (This, Super)):
+            self.fail("THIS/SUPER requires a constant member", expr.loc)
         if isinstance(expr, Member):
             return self.preflight_reference(expr.base, pou, ((expr.name, pou), *path))
         if isinstance(expr, BitAccess):
@@ -1138,10 +1321,15 @@ class _Validator:
             leaves = measure(pou.return_type, pou.loc)[0] if pou.return_type is not None else 0
             owned = list(pou.variables)
             if pou.kind == "FUNCTION_BLOCK":
+                owned = [
+                    var
+                    for ancestor in self.pous.lineages.get(pou.name, (pou.name,))
+                    for var in definitions[ancestor].variables
+                ]
                 owned.extend(
                     var
-                    for method in pou.methods
-                    for var in definitions[method.name].variables
+                    for method in self.pous.instance_methods(pou)
+                    for var in method.variables
                     if var.section == "VAR_INST"
                 )
             for var in owned:
@@ -1464,12 +1652,18 @@ class _Validator:
         self.fail("Expected a literal", expr.loc)
         raise AssertionError("unreachable")
 
-    def constant_owner(self, pou: Pou | None, loc: Location) -> Pou:
+    def constant_owner(self, pou: Pou | None, loc: Location, *, base: bool = False) -> Pou:
         if pou is None or (
             pou.kind not in {"FUNCTION_BLOCK", "PROPERTY_DECL"} and pou.kind not in _MEMBER_KINDS
         ):
-            self.fail("THIS requires an owning FUNCTION_BLOCK", loc)
-        return pou if pou.kind == "FUNCTION_BLOCK" else self.pous[pou.owner]
+            self.fail("THIS/SUPER requires an owning FUNCTION_BLOCK", loc)
+        owner = pou if pou.kind == "FUNCTION_BLOCK" else self.pous[pou.owner]
+        if base:
+            parent = self.pous.bases.get(owner.name)
+            if parent is None:
+                self.fail("SUPER requires a lexical base FUNCTION_BLOCK", loc)
+            owner = self.pous[parent]
+        return owner
 
     def constant_expression(self, expr: Expr, pou: Pou | None = None) -> tuple[Value, TypeSpec]:
         """Evaluate only checked, side-effect-free declaration expressions."""
@@ -1508,9 +1702,10 @@ class _Validator:
                     )
                 return value, value.enum_type
             if isinstance(expr, Member):
-                if isinstance(expr.base, This):
+                if isinstance(expr.base, (This, Super)):
                     return self.constant_expression(
-                        Reference((expr.name,), expr.loc), self.constant_owner(pou, expr.loc)
+                        Reference((expr.name,), expr.loc),
+                        self.constant_owner(pou, expr.loc, base=isinstance(expr.base, Super)),
                     )
                 value, kind = self.constant_expression(expr.base, pou)
                 if canonical_type(kind) in INTEGER_TYPES:
@@ -1618,7 +1813,8 @@ class _Validator:
         target = self.pous.get(type_name) if isinstance(type_name, str) else None
         if target is None or target.kind not in {"FUNCTION_BLOCK", "GVL", "PROGRAM"}:
             self.fail(f"Type {type_name} has no field {field}", loc)
-        var = self.variables[target.name].get(field)
+        binding = self.fb_variable(target.name, field)
+        var = binding[1] if binding is not None else None
         if var is None:
             self.fail(f"Unknown field {field} on {target.name}", loc)
         if target.kind == "FUNCTION_BLOCK" and var.section not in {"VAR_INPUT", "VAR_OUTPUT"}:
@@ -1643,6 +1839,8 @@ class _Validator:
             if (
                 owner is None
                 or name in self.variables[pou.name]
+                or pou.kind == "FUNCTION_BLOCK"
+                and self.fb_variable(pou.name, name) is not None
                 or (name == pou.result_name and pou.kind in _RESULT_KINDS)
             ):
                 return None
@@ -1660,10 +1858,17 @@ class _Validator:
     def reference(
         self, ref: LValue, pou: Pou, *, writable: bool = False, allow_property: bool = False
     ) -> TypeSpec:
-        if isinstance(ref, This):
+        if isinstance(ref, (This, Super)):
             owner = pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
             if owner is None:
-                self.fail("THIS requires an owning FUNCTION_BLOCK", ref.loc)
+                self.fail(
+                    f"{'SUPER' if isinstance(ref, Super) else 'THIS'} requires an owning FUNCTION_BLOCK",
+                    ref.loc,
+                )
+            if isinstance(ref, Super):
+                owner = self.pous.bases.get(owner)
+                if owner is None:
+                    self.fail("SUPER requires a lexical base FUNCTION_BLOCK", ref.loc)
             return owner
         property_target = self.property_target(ref, pou)
         if property_target is not None:
@@ -1675,12 +1880,13 @@ class _Validator:
                 self.fail(
                     f"Property {prop.name} has no {'SET' if writable else 'GET'} accessor", ref.loc
                 )
-            owner = pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
-            if accessor.access == "PRIVATE" and owner != accessor.owner:
-                self.fail(f"Private property {prop.name} is inaccessible", ref.loc)
+            self.member_access(accessor, pou, ref.loc)
             targets = self.pous.property_writes if writable else self.pous.property_reads
             targets[id(ref)] = receiver, accessor.name
-            self.call_edge(pou, accessor)
+            static = isinstance(receiver, Super)
+            if static:
+                self.pous.static_dispatch.add(id(ref))
+            self.call_edge(pou, accessor, static=static)
             return accessor.return_type
         if isinstance(ref, BitAccess):
             kind = self.reference(ref.base, pou, writable=writable)
@@ -1697,11 +1903,14 @@ class _Validator:
                 self.require(self.expression(index, pou), "INTEGER", index.loc)
             return base.element_type
         if isinstance(ref, Member):
-            if isinstance(ref.base, This):
+            if isinstance(ref.base, (This, Super)):
                 owner = self.reference(ref.base, pou)
-                var = self.variables[owner].get(ref.name)
-                if var is None:
+                binding = self.fb_variable(owner, ref.name)
+                if binding is None:
                     self.fail(f"Unknown field {ref.name} on {owner}", ref.loc)
+                _, var = binding
+                if isinstance(ref.base, Super) and var.section == "VAR_TEMP":
+                    self.fail("SUPER cannot access another body's VAR_TEMP", ref.loc)
                 if pou.kind in _MEMBER_KINDS and var.section in {"VAR_TEMP", "VAR_IN_OUT"}:
                     self.fail(
                         f"Owner {var.section} {var.name} is inaccessible from members", ref.loc
@@ -1918,21 +2127,21 @@ class _Validator:
             # the owner's method namespace has had a chance to resolve the call.
             if owner is None or method_name in self.variables[pou.name]:
                 return None
-            target = self.pous.get(f"{owner}.{method_name}")
+            target = self.pous.method_for(owner, method_name)
         else:
             kind = self.reference(receiver, pou)
             target = (
                 self.pous.prototype_pous.get(f"{kind.name}.{method_name}")
                 if isinstance(kind, InterfaceType)
-                else self.pous.get(f"{kind}.{method_name}")
+                else self.pous.method_for(kind, method_name)
                 if isinstance(kind, str)
                 else None
             )
         if target is None or target.kind != "METHOD":
             return None
-        scope_owner = pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
-        if target.access == "PRIVATE" and scope_owner != target.owner:
-            self.fail(f"Private method {target.name} is inaccessible", call.loc)
+        self.member_access(target, pou, call.loc)
+        if isinstance(receiver, Super):
+            self.pous.static_dispatch.add(id(call))
         self.pous.method_calls[id(call)] = receiver, target.name
         return target
 
@@ -1968,12 +2177,14 @@ class _Validator:
             target = self.pous.get(type_name) if isinstance(type_name, str) else None
             if target is None or target.kind != "FUNCTION_BLOCK":
                 self.fail(f"Call target {name} is not callable", call.loc)
-        self.call_edge(pou, target)
+        if isinstance(call.target, Super):
+            self.pous.super_calls[id(call)] = target.name
+        self.call_edge(pou, target, static=id(call) in self.pous.static_dispatch)
         if as_expression and target.kind not in {"FUNCTION", "METHOD"}:
             self.fail("FB and PROGRAM calls cannot be used as expressions", call.loc)
         parameters = {
             var.name: var
-            for var in target.variables
+            for var in self.pous.variables_for(target)
             if var.section in {"VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT"}
         }
         positional = [arg.name is None for arg in call.arguments]
@@ -1981,7 +2192,11 @@ class _Validator:
             self.fail("Cannot mix positional and named arguments", call.loc)
         if any(positional) and target.kind in {"FUNCTION_BLOCK", "PROGRAM"}:
             self.fail("FB and PROGRAM calls require named arguments", call.loc)
-        ordered = [var for var in target.variables if var.section in {"VAR_INPUT", "VAR_IN_OUT"}]
+        ordered = [
+            var
+            for var in self.pous.variables_for(target)
+            if var.section in {"VAR_INPUT", "VAR_IN_OUT"}
+        ]
         bound: set[str] = set()
         for index, arg in enumerate(call.arguments):
             if arg.name is None:

@@ -299,8 +299,13 @@ class Frame:
 
         result = snapshot(self.slots)
         if self.method_instances:
+            short_names = [name.rsplit(".", 1)[-1] for name in self.method_instances]
             result["$VAR_INST"] = {
-                name.rsplit(".", 1)[-1]: snapshot(slots)
+                (
+                    name
+                    if short_names.count(name.rsplit(".", 1)[-1]) > 1
+                    else name.rsplit(".", 1)[-1]
+                ): snapshot(slots)
                 for name, slots in self.method_instances.items()
             }
         return result

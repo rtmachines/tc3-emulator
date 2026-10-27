@@ -30,6 +30,7 @@ from tc_emulator.types import (
     numeric_type,
     trunc_div,
 )
+from tc_emulator.validation import Registry
 
 
 @dataclass
@@ -85,7 +86,7 @@ def initial_value(decl: st.VarDecl) -> Value:
 
 
 class Engine:
-    def __init__(self, registry: dict[str, st.Pou], owner: MemoryOwner) -> None:
+    def __init__(self, registry: Registry, owner: MemoryOwner) -> None:
         self.registry = registry
         self.owner = owner
         self.global_frames: dict[str, Frame] = {}
@@ -126,7 +127,7 @@ class Engine:
             pou,
             {
                 decl.name: self._variable(decl, lifetime)
-                for decl in pou.variables
+                for decl in self.registry.variables_for(pou)
                 if decl.section != "VAR_INST"
             },
             lifetime=lifetime,
@@ -138,7 +139,7 @@ class Engine:
                     for decl in self.registry[method.name].variables
                     if decl.section == "VAR_INST"
                 }
-                for method in pou.methods
+                for method in self.registry.instance_methods(pou)
                 if any(decl.section == "VAR_INST" for decl in self.registry[method.name].variables)
             }
         if pou.name in TIMER_NAMES:
@@ -158,17 +159,30 @@ class Engine:
         frame.slots.update(owner.method_instances.get(pou.name, {}))
         return frame
 
+    def owner_has(self, frame: Frame, name: str) -> bool:
+        """Only the executing declaration's lexical fields precede globals."""
+        owner = self.registry.lexical_owner(frame.pou)
+        return (
+            frame.method_owner is not None
+            and owner is not None
+            and any(var.name == name for var in self.registry.variables_for(self.registry[owner]))
+        )
+
     def resolve(
         self, ref: st.LValue, frame: Frame, ctx: Context | None = None
     ) -> Cell | Frame | FBArray | InterfaceSlot:
-        if isinstance(ref, st.This):
+        if isinstance(ref, (st.This, st.Super)):
             return frame.method_owner or frame
         if id(ref) in self.registry.bit_accesses:
             base, index = self.registry.bit_accesses[id(ref)]
             return self.storage(base, frame, ctx)._bit(index)
         if isinstance(ref, st.Member):
             try:
-                base = self.resolve(ref.base, frame, ctx)
+                base = (
+                    frame
+                    if isinstance(ref.base, st.This) and frame.pou.kind == "FUNCTION_BLOCK"
+                    else self.resolve(ref.base, frame, ctx)
+                )
                 if isinstance(base, Frame):
                     if ref.name not in base.slots:
                         raise ValueError(f"Unknown variable {ref.name}")
@@ -191,7 +205,7 @@ class Engine:
         root = ref.parts[0]
         if root in frame.slots:
             current: Cell | Frame | FBArray | InterfaceSlot | None = frame.slots[root]
-        elif frame.method_owner is not None and root in frame.method_owner.slots:
+        elif self.owner_has(frame, root):
             current = frame.method_owner.slots[root]
         elif root in self.global_frames:
             current = self.global_frames[root]
@@ -244,13 +258,11 @@ class Engine:
         ctx: Context,
         loc: st.Location,
         value: Value | None = None,
+        *,
+        static: bool = False,
     ) -> Value:
         """Use the ordinary invocation context for implicit and Python access."""
-        if accessor.name in self.registry.prototype_pous:
-            accessor = self.registry[
-                f"{owner.pou.name}.{accessor.property_name}."
-                f"{'SET' if accessor.kind == 'PROPERTY_SET' else 'GET'}"
-            ]
+        accessor = self.registry.dispatch(owner.pou.name, accessor, static=static)
         if accessor.kind == "PROPERTY_SET":
             try:
                 value = check_value(accessor.return_type, value)
@@ -272,21 +284,43 @@ class Engine:
         inputs: dict[str, Value | Cell | Frame | None],
         ctx: Context,
         loc: st.Location,
+        *,
+        body: st.Pou | None = None,
     ) -> None:
         for value in inputs.values():
             if isinstance(value, Cell) and value.read_only:
                 raise ExecutionError("Cannot bind a read-only constant cell as VAR_IN_OUT", loc)
         if len(ctx.stack) >= ctx.max_depth:
             raise ExecutionError("Call depth limit exceeded", loc, tuple(ctx.stack))
+        persistent = None
+        if frame.pou.kind == "FUNCTION_BLOCK" and frame.timer is None and frame.standard is None:
+            # A body activation shares persistent cells and concrete identity, but
+            # owns only its lexical body's temporary slots and lifetime.
+            persistent = frame
+            declaration = body or frame.pou
+            frame = Frame(
+                declaration,
+                {
+                    decl.name: persistent.slots[decl.name]
+                    for decl in self.registry.variables_for(declaration)
+                    if decl.section != "VAR_TEMP"
+                },
+                lifetime=persistent.lifetime,
+                method_owner=persistent,
+            )
         ctx.stack.append(frame.pou.name)
         temporary_lifetime = Lifetime()
         try:
-            for decl in frame.pou.variables:
+            for decl in self.registry.variables_for(frame.pou):
                 if decl.section == "VAR_TEMP":
                     frame.slots[decl.name] = self._variable(decl, temporary_lifetime)
+                    if persistent is not None and persistent.pou.name == frame.pou.name:
+                        persistent.slots[decl.name] = frame.slots[decl.name]
             for name, value in inputs.items():
                 if isinstance(value, Cell):
                     frame.slots[name] = value
+                    if persistent is not None:
+                        persistent.slots[name] = value
                 else:
                     target = frame.slots[name]
                     if isinstance(target, InterfaceSlot):
@@ -356,14 +390,20 @@ class Engine:
                 method_owner = method_owner.capture(call.loc, dispatch=True)
             if not isinstance(method_owner, Frame):
                 raise ExecutionError("Method receiver is not a function block", call.loc)
-            if qualified_name in self.registry.prototype_pous:
-                qualified_name = f"{method_owner.pou.name}.{qualified_name.split('.', 1)[1]}"
-            pou = self.registry[qualified_name]
+            declaration = (
+                self.registry.prototype_pous.get(qualified_name) or self.registry[qualified_name]
+            )
+            pou = self.registry.dispatch(
+                method_owner.pou.name, declaration, static=id(call) in self.registry.static_dispatch
+            )
+        elif id(call) in self.registry.super_calls:
+            target = caller.method_owner or caller
+            pou = self.registry[self.registry.super_calls[id(call)]]
         elif (
             isinstance(call.target, st.Reference)
             and len(call.target.parts) == 1
             and root not in caller.slots
-            and (caller.method_owner is None or root not in caller.method_owner.slots)
+            and not self.owner_has(caller, root)
             and root not in self.program_frames
             and root not in self.global_frames
             and root not in self.registry.global_variables
@@ -375,8 +415,10 @@ class Engine:
             if not isinstance(target, Frame):
                 raise ExecutionError("Call target is not a function block", call.loc)
             pou = target.pou
-        variables = {decl.name: decl for decl in pou.variables}
-        positional = [decl for decl in pou.variables if decl.section in ("VAR_INPUT", "VAR_IN_OUT")]
+        variables = {decl.name: decl for decl in self.registry.variables_for(pou)}
+        positional = [
+            decl for decl in variables.values() if decl.section in ("VAR_INPUT", "VAR_IN_OUT")
+        ]
         inputs: dict[str, Value | Cell | Frame | None] = {}
         outputs: list[tuple[str, Cell]] = []
         for index, argument in enumerate(call.arguments):
@@ -406,7 +448,13 @@ class Engine:
                 raise ExecutionError(
                     "Instance nesting limit exceeded", call.loc, (*ctx.stack, pou.name)
                 ) from error
-        self.invoke(target, inputs, ctx, call.loc)
+        self.invoke(
+            target,
+            inputs,
+            ctx,
+            call.loc,
+            body=pou if id(call) in self.registry.super_calls else None,
+        )
         for name, cell in outputs:
             output = target.slots[name]
             cell._write(output.value, call.loc)
@@ -466,9 +514,9 @@ class Engine:
                 receiver, name = self.registry.property_reads[id(expr)]
                 owner = self.property_owner(receiver, frame, ctx)
                 accessor = self.registry.prototype_pous.get(name) or self.registry[name]
-                return self.invoke_property(owner, accessor, ctx, expr.loc), canonical_type(
-                    accessor.return_type
-                )
+                return self.invoke_property(
+                    owner, accessor, ctx, expr.loc, static=id(expr) in self.registry.static_dispatch
+                ), canonical_type(accessor.return_type)
             if isinstance(expr, st.Literal):
                 if isinstance(expr.type_name, StringType) or type(expr.value) is str:
                     kind = expr.type_name or StringType(max(1, len(expr.value)))
@@ -485,7 +533,7 @@ class Engine:
                 isinstance(expr, st.Reference)
                 and len(expr.parts) == 2
                 and expr.parts[0] not in frame.slots
-                and (frame.method_owner is None or expr.parts[0] not in frame.method_owner.slots)
+                and not self.owner_has(frame, expr.parts[0])
                 and expr.parts[0] not in self.registry.global_variables
             ):
                 kind = canonical_type(self.registry.types.get(expr.parts[0], ""))
@@ -603,6 +651,7 @@ class Engine:
                         ctx,
                         statement.loc,
                         value,
+                        static=id(statement.target) in self.registry.static_dispatch,
                     )
                 else:
                     target = self.resolve(statement.target, frame, ctx)

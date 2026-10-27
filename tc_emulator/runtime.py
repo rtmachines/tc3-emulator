@@ -182,7 +182,9 @@ class Runtime:
         """Validate every Python argument before changing any persistent memory."""
         self._ensure_healthy()
         declarations = {
-            decl.name: decl for decl in pou.variables if decl.section in ("VAR_INPUT", "VAR_IN_OUT")
+            decl.name: decl
+            for decl in self._registry.variables_for(pou)
+            if decl.section in ("VAR_INPUT", "VAR_IN_OUT")
         }
         normalized: dict[str, Value | Cell | Frame | None] = {}
         for name, value in inputs.items():
@@ -246,7 +248,7 @@ class Runtime:
         frame = frames.get(canonical_owner)
         if frame is None:
             raise ArgumentError(f"Unknown storage namespace {owner_name}")
-        for decl in frame.pou.variables:
+        for decl in self._registry.variables_for(frame.pou):
             if decl.name == canonical_variable and decl.section != "VAR_TEMP":
                 cell = frame.slots[canonical_variable]
                 if isinstance(cell, Cell):
@@ -264,7 +266,7 @@ class Runtime:
 
     def _stored_fb(self, frame: Frame, variable_name: str, indices: tuple[int, ...]) -> FBHandle:
         canonical = _name(variable_name)
-        for decl in frame.pou.variables:
+        for decl in self._registry.variables_for(frame.pou):
             if decl.name != canonical or decl.section == "VAR_TEMP":
                 continue
             storage = frame.slots[canonical]
@@ -364,12 +366,11 @@ class FBHandle:
     def call_method(self, name: str, /, **inputs: Value | Cell | FBHandle) -> CallResult:
         """Call a PUBLIC method with fresh locals, preserving its owner's state."""
         self._runtime._ensure_healthy()
-        qualified = f"{self._frame.pou.name}.{_name(name)}"
-        pou = self._runtime._registry.get(qualified)
+        pou = self._runtime._registry.method_for(self._frame.pou.name, _name(name))
         if pou is None or pou.kind != "METHOD":
             raise ArgumentError(f"Unknown method {name}", self._frame.pou.loc)
         if pou.access != "PUBLIC":
-            raise ArgumentError(f"Cannot call PRIVATE method {name}", pou.loc)
+            raise ArgumentError(f"Cannot call {pou.access} method {name}", pou.loc)
         arguments = self._runtime._arguments(pou, inputs)
         frame = self._runtime._new_frame(pou, self._frame)
         self._runtime._execute(frame, arguments)
@@ -395,7 +396,7 @@ class FBHandle:
                 f"Property {name} has no {'SET' if writable else 'GET'} accessor", prop.loc
             )
         if prop.access != "PUBLIC" or accessor.access != "PUBLIC":
-            raise ArgumentError(f"Cannot access PRIVATE property {name}", prop.loc)
+            raise ArgumentError(f"Cannot access {accessor.access} property {name}", prop.loc)
         return accessor
 
     def _execute_property(self, accessor: st.Pou, value: Value | None = None) -> Value:
@@ -424,7 +425,7 @@ class FBHandle:
 
     def _field(self, name: str, section: str) -> Cell | InterfaceSlot:
         canonical = _name(name)
-        for decl in self._frame.pou.variables:
+        for decl in self._runtime._registry.variables_for(self._frame.pou):
             if decl.name == canonical and decl.section == section:
                 return self._frame.slots[canonical]
         raise ArgumentError(f"Unknown {section} variable {name}", self._frame.pou.loc)
