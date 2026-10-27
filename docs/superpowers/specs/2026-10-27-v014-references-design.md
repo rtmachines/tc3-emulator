@@ -51,7 +51,9 @@ dereferences its base. References can supply values to ordinary inputs and their
 targets to ordinary VAR_IN_OUT, including open arrays. In a call to reference VAR_INPUT,
 `arg := storage` binds rather than copies; accept compatible reference arguments and literal
 integer 0 as well. A missing function/method input is required unless declared with a null
-default; FB input omission preserves its binding. Explicit THIS^/SUPER^ access and inherited
+default; nonzero reference-input defaults in functions/methods/interface prototypes are rejected
+in this profile. FB reference inputs may have direct storage binding initializers and omission
+preserves their binding. Explicit THIS^/SUPER^ access and inherited
 reference slots retain v0.13 visibility and live receiver semantics.
 
 ## Initializers and lifetimes
