@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -218,6 +219,31 @@ class BitCell(Cell):
         self._parent._replace(value)
 
 
+def _array_offset(bounds: tuple[tuple[int, int], ...], indices: tuple[int, ...]) -> int:
+    """Check indices in declaration order and return their row-major offset."""
+    if len(indices) != len(bounds):
+        raise IndexError("Wrong number of array indices")
+    offset = 0
+    for index, (low, high) in zip(indices, bounds, strict=True):
+        if type(index) is not int:
+            raise TypeError("Array indices must be integers, not BOOL")
+        if not low <= index <= high:
+            raise IndexError(f"Array index {index} outside [{low}, {high}]")
+        offset = offset * (high - low + 1) + index - low
+    return offset
+
+
+def _array_snapshot(items: Iterator[Frame | InterfaceSlot], shape: tuple[int, ...]) -> tuple:
+    """Inspect row-major storage lazily while restoring its declared shape."""
+
+    def reshape(dimension: int) -> tuple:
+        if dimension + 1 == len(shape):
+            return tuple(next(items).inspect() for _ in range(shape[dimension]))
+        return tuple(reshape(dimension + 1) for _ in range(shape[dimension]))
+
+    return reshape(0)
+
+
 @dataclass
 class FBArray:
     """Fixed instance storage, with distinct row-major function-block frames."""
@@ -226,28 +252,11 @@ class FBArray:
     items: tuple[Frame, ...]
 
     def _element(self, indices: tuple[int, ...]) -> Frame:
-        if len(indices) != len(self.type_name.bounds):
-            raise IndexError("Wrong number of array indices")
-        offset = 0
-        for index, (low, high) in zip(indices, self.type_name.bounds, strict=True):
-            if type(index) is not int:
-                raise TypeError("Array indices must be integers, not BOOL")
-            if not low <= index <= high:
-                raise IndexError(f"Array index {index} outside [{low}, {high}]")
-            offset = offset * (high - low + 1) + index - low
-        return self.items[offset]
+        return self.items[_array_offset(self.type_name.bounds, indices)]
 
     def inspect(self) -> tuple:
         """Return a detached nested snapshot with the declared array shape."""
-        items = iter(self.items)
-        shape = self.type_name.shape
-
-        def reshape(dimension: int) -> tuple:
-            if dimension + 1 == len(shape):
-                return tuple(next(items).inspect() for _ in range(shape[dimension]))
-            return tuple(reshape(dimension + 1) for _ in range(shape[dimension]))
-
-        return reshape(0)
+        return _array_snapshot(iter(self.items), self.type_name.shape)
 
 
 @dataclass
@@ -292,28 +301,11 @@ class InterfaceArray:
     items: tuple[InterfaceSlot, ...]
 
     def _element(self, indices: tuple[int, ...]) -> InterfaceSlot:
-        if len(indices) != len(self.type_name.bounds):
-            raise IndexError("Wrong number of array indices")
-        offset = 0
-        for index, (low, high) in zip(indices, self.type_name.bounds, strict=True):
-            if type(index) is not int:
-                raise TypeError("Array indices must be integers, not BOOL")
-            if not low <= index <= high:
-                raise IndexError(f"Array index {index} outside [{low}, {high}]")
-            offset = offset * (high - low + 1) + index - low
-        return self.items[offset]
+        return self.items[_array_offset(self.type_name.bounds, indices)]
 
     def inspect(self) -> tuple:
         """Return a detached nested snapshot with the declared array shape."""
-        items = iter(self.items)
-        shape = self.type_name.shape
-
-        def reshape(dimension: int) -> tuple:
-            if dimension + 1 == len(shape):
-                return tuple(next(items).inspect() for _ in range(shape[dimension]))
-            return tuple(reshape(dimension + 1) for _ in range(shape[dimension]))
-
-        return reshape(0)
+        return _array_snapshot(iter(self.items), self.type_name.shape)
 
 
 @dataclass
