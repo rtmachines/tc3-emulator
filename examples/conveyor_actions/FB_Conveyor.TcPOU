@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_Conveyor">
+    <Declaration><![CDATA[{attribute 'call_after_init'}
+FUNCTION_BLOCK FB_Conveyor EXTENDS FB_ConveyorBase
+VAR_OUTPUT
+    derivedInitCount : DINT;
+    derivedActionCount : DINT;
+    alarm : BOOL;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[SUPER^();
+]]></ST></Implementation>
+    <Method Name="FB_init">
+      <Declaration><![CDATA[METHOD PUBLIC FB_init : BOOL
+VAR_INPUT
+    bInitRetains : BOOL;
+    bInCopyCode : BOOL;
+    conveyorId : DINT;
+    sharedConfig : REFERENCE TO ST_ConveyorConfig;
+    defaultDelay : TIME := T#100ms;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[StartDelay := defaultDelay;
+derivedInitCount := derivedInitCount + 1;
+initTrace := initTrace * 10 + 2;
+FB_init := TRUE;
+]]></ST></Implementation>
+    </Method>
+    <Method Name="AfterInit">
+      <Declaration><![CDATA[{attribute 'call_after_init'}
+METHOD PUBLIC AfterInit
+]]></Declaration>
+      <Implementation><ST><![CDATA[SUPER^.AfterInit();
+initTrace := initTrace * 10 + 5;
+ready := __ISVALIDREF(config) AND_THEN (id > 0 AND StartDelay > T#0ms AND factor > 0.0);
+]]></ST></Implementation>
+    </Method>
+    <Action Name="UpdateOutputs" Id="{5cf1aa9a-6b3d-460b-a193-9b49fc3da1f2}">
+      <Implementation><ST><![CDATA[SUPER^.UpdateOutputs();
+alarm := state = E_ConveyorState.Fault;
+(* Instrumentation proves virtual dispatch from the base FB body. *)
+derivedActionCount := derivedActionCount + 1;
+]]></ST></Implementation>
+    </Action>
+  </POU>
+</TcPlcObject>

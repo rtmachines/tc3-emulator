@@ -4,7 +4,7 @@ Interpreter ograniczonego podzbioru Structured Text napisany w Pythonie.
 Uruchamia funkcje, bloki funkcyjne i programy PLC z GVL bez instalacji TwinCAT, również na Linuxie.
 Przeznaczony do szybkich testów logiki w Pythonie/pytest.
 
-**Wersja 0.15 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
+**Wersja 0.16 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
 obsługiwane konstrukcje; pozostałe są odrzucane. Przejście testu nie potwierdza
 pełnej zgodności z runtime Beckhoff. Nie wykonuje binariów ani bibliotek TwinCAT.
 
@@ -103,7 +103,7 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 - Wbudowane timery TON, TOF, TP ze wspólnym wirtualnym zegarem Runtime.
 - R_TRIG, F_TRIG, SR, RS, CTU, CTD, CTUD; funkcje standardowe i jawne konwersje typów.
 - Lokalne VAR CONSTANT, wyrażenia stałe, nazwane granice tablic i etykiety CASE.
-- TYPE: aliasy, STRUCT i enumy; inicjalizacja, pola i zagnieżdżone typy wartościowe.
+- TYPE: aliasy, STRUCT i enumy, także strict/qualified_only; inicjalizacja i typy zagnieżdżone.
 - Stałe tablice, również wielowymiarowe i tablice struktur/enumów; inicjalizatory i powtórzenia.
 - Tablice instancji FB, indeksowane wywołania i metody; ARRAY[*] w VAR_IN_OUT typów wartościowych.
 - LOWER_BOUND/UPPER_BOUND dla tablic stałych i otwartych parametrów.
@@ -113,20 +113,21 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 - Funkcje tekstowe LEN/LEFT/RIGHT/MID/CONCAT/FIND/INSERT/DELETE/REPLACE i konwersje tekstu.
 - IF/ELSIF/ELSE, CASE, FOR/TO/BY, WHILE, RETURN, EXIT.
 - Funkcje w wyrażeniach, zagnieżdżone FB, dostęp do ich wejść/wyjść, wiązania `=>`.
+- Akcje ST w FB i PROGRAM: ACTION, wywołania lokalne, przez instancję i z Pythona.
 - Metody FB: METHOD, PUBLIC/PROTECTED/PRIVATE, parametry i wyniki, wywołania ze ST i Pythona.
 - Właściwości FB PROPERTY GET/SET, THIS^ oraz VAR_INST w metodach FB.
 - INTERFACE/IMPLEMENTS, zmienne interfejsowe i dynamiczne wywołania metod/właściwości.
-- Pojedyncze dziedziczenie FB przez EXTENDS, nadpisania metod/właściwości i SUPER^.
+- Pojedyncze dziedziczenie FB przez EXTENDS, nadpisania metod/właściwości/akcji i SUPER^.
 - Inicjalizacja FB przez FB_init, parametry deklaracji, przypisania wejść/właściwości
   po FB_init i hooki call_after_init, także dla dziedziczenia i tablic FB.
 - Nazwy bez rozróżniania wielkości liter; komentarze `//` i zagnieżdżone `(* ... *)`.
-- Import deklaracji i implementacji ST z `.TcPOU`, w tym metod i właściwości FB; bez akcji.
+- Import deklaracji i implementacji ST z `.TcPOU`, w tym metod, właściwości FB oraz akcji FB/PROGRAM.
 - Import pojedynczej deklaracji typu z prostego `.TcDUT` i listy globalnej z `.TcGVL`.
 - Import kontraktów metod i właściwości interfejsu z `.TcIO`.
 
 Poza zakresem pozostają LTIME, DATE/TOD/DT, WSTRING i tekst UTF-8,
 RETAIN/PERSISTENT, VAR_EXTERNAL, metody i właściwości PROGRAM,
-dziedziczenie interfejsów, atrybuty poza GVL qualified_only i FB/metod call_after_init,
+dziedziczenie interfejsów, atrybuty poza GVL qualified_only, enumów strict/qualified_only i FB/metod call_after_init,
 FB_exit/FB_reinit, online change, biblioteki zewnętrzne,
 ogólne wskaźniki, referencje do FB/interfejsów i referencje zagnieżdżone.
 Obsługiwane mechanizmy aliasowania to VAR_IN_OUT, zmienne interfejsowe,
@@ -310,8 +311,9 @@ END_TYPE
 
 Enum zapisujemy jako listę członków w nawiasach, bez osobnego słowa `ENUM`.
 W kodzie używaj kwalifikowanych nazw, np. `E_State.Running`; działają również
-jako etykiety CASE. Skrót `Idle` w powyższym przykładzie jest dozwolony tylko
-przy deklarowaniu wartości domyślnej tego enumu.
+jako etykiety CASE. Od v0.16 enum bez `qualified_only` dopuszcza też skróconą
+nazwę członka, jeśli jest jednoznaczna i nie przesłania jej zmienna lub stała.
+Wartość domyślna deklarowanego enumu może używać skrótu także z `qualified_only`.
 
 Pola, indeksy i inicjalizatory można zagnieżdżać:
 
@@ -386,11 +388,12 @@ Jawne zasady tego profilu:
   muszą być unikalne i mieścić się w typie bazowym. Bez jawnego domyślnego członka
   wybierany jest członek o wartości 0, a gdy go brak — pierwszy.
 - Enumy można przypisywać i porównywać tylko w obrębie tego samego typu;
-  arytmetyka i niejawne konwersje enum–liczba są odrzucane.
+  arytmetyka i niejawne konwersje enum–liczba są odrzucane. Wyjątkiem od v0.16
+  jest opisana niżej kontrolowana konwersja stałej całkowitej do enumu `strict`.
 - Typ złożony może zawierać najwyżej 1 000 000 wartości skalarnych łącznie,
   a ścieżka odwołań do nazwanych typów najwyżej 64 poziomy. Cykle typów i puste
   struktury są odrzucane przed tworzeniem wartości domyślnych.
-- Poza zakresem pozostają STRUCT EXTENDS, UNION, podzakresy, atrybuty enumów,
+- Poza zakresem pozostają STRUCT EXTENDS, UNION, podzakresy, inne atrybuty enumów,
   przestrzenie nazw oraz pola/aliasy typu FB. Domyślne wartości struktury deklaruj
   przy polach lub przez inicjalizator aliasu; inicjalizacja po END_STRUCT nie jest obsługiwana.
 
@@ -1397,7 +1400,7 @@ Przykłady z poprzednich wersji pozostają dostępne.
 
 Poza zakresem pozostają `ABSTRACT`, `FINAL`, `INTERNAL`, dziedziczenie
 wbudowanych FB i interfejsów, ogólne operatory wskaźnikowe,
-`FB_exit`/`FB_reinit`, akcje, online change i semantyka trwałości PLC.
+`FB_exit`/`FB_reinit`, akcje SFC, online change i semantyka trwałości PLC.
 Nieobsługiwane deklaracje są odrzucane. Dziedziczenie nie dodaje kopiowania FB
 przez wartość ani przekazywania FB przez `VAR_IN_OUT`.
 
@@ -1725,6 +1728,145 @@ Profil v0.15 dotyczy wyłącznie nowych instancji. Nie obejmuje restartu PLC,
 `RETAIN`/`PERSISTENT`, online change, kopiowania instancji, `FB_exit` ani
 `FB_reinit`. Nieznane atrybuty i konstrukcje są nadal odrzucane, także w kodzie,
 który nie zostanie wywołany. Wcześniejsze przykłady pozostają dostępne.
+
+## Akcje ST i atrybuty enumów (v0.16)
+
+Akcja należy do FB albo PROGRAM i wykonuje wyłącznie wybrane ciało na pamięci
+właściciela. Nie wywołuje jego głównego ciała ani `FB_init`. W samodzielnym ST
+zapisz `ACTION Nazwa: ... END_ACTION` po głównym ciele właściciela, obok jego
+metod/właściwości. Pełny przykład z dwiema akcjami i enumem:
+
+```python
+from tc_emulator import Runtime
+
+rt = Runtime.from_source("""
+{attribute 'strict'}
+{attribute 'qualified_only'}
+TYPE E_State : (Stopped := 0, Running := 2); END_TYPE
+FUNCTION_BLOCK Motor
+VAR_INPUT enable : BOOL := TRUE; END_VAR
+VAR_OUTPUT state : E_State := E_State.Stopped; calls : DINT; END_VAR
+Step();
+ACTION Step:
+    IF enable THEN state := E_State.Running;
+    ELSE state := E_State.Stopped; END_IF;
+    calls := calls + 1;
+END_ACTION
+ACTION Stop: state := E_State.Stopped; END_ACTION
+END_FUNCTION_BLOCK
+""")
+motor = rt.instantiate("Motor")
+assert motor.call_action("Step", enable=True) is None
+assert motor.output("state").name == "RUNNING"
+assert motor.output("calls") == 1
+motor.call_action("Stop")
+assert motor.output("state").name == "STOPPED"
+assert motor.output("calls") == 1
+```
+
+Wywołania ST obejmują `Step()`, `THIS^.Step()`, `fb.Step()`,
+`items[i].Step()`, `MAIN.Step()` oraz `SUPER^.Step()`. Akcje FB są dziedziczone
+z dynamicznym wyborem nadpisania, także przy wywołaniu z ciała bazy;
+`SUPER^` wybiera implementację leksykalnej bazy. PROGRAM nie ma dziedziczenia;
+`THIS^`/`SUPER^` są ograniczone do FB. FUNCTION nie może wywołać akcji PROGRAM.
+Natywny `.TcPOU` przechowuje ciało w
+`<Action Name="Step" Id="{GUID}"><Implementation><ST>...</ST></Implementation></Action>`.
+Sekcja ST zawiera same instrukcje, bez `ACTION`/`END_ACTION` i bez Declaration.
+
+Akcje nie mają własnych parametrów, zmiennych lokalnych ani wyniku i nie mogą
+być wyrażeniami lub metodami interfejsu. Argumenty nazwane i mapowania `=>`
+korzystają z wejść/wyjść właściciela. Zewnętrzne wywołanie wymaga wszystkich jego
+`VAR_IN_OUT`; lokalne używa bieżących wiązań. Pominięte wejścia zachowują wartość.
+Kontrakt zewnętrznego wywołania ST pochodzi ze statycznego typu odbiorcy,
+a Pythona z konkretnego typu uchwytu; lokalne/THIS/SUPER używają zakresu
+leksykalnego. Akcje współdzielą aktywację `VAR_TEMP` właściciela z jego bieżącym
+ciałem i zagnieżdżonymi akcjami; zewnętrzne wywołanie tworzy świeżą aktywację.
+Nie widzą zmiennych lokalnych wywołującej metody. `RETURN` kończy tylko akcję.
+Obowiązują wspólne limity wykonania, wykrywanie cykli i blokada po błędzie.
+Nie obejmuje to SFC ani kwalifikatorów akcji SFC.
+
+Oba atrybuty enumów umieszcza się bezpośrednio przed `TYPE`, w dowolnej kolejności.
+W bloku z wieloma deklaracjami dotyczą tylko pierwszej. Duplikaty, wartości
+atrybutów, inne położenia i atrybuty na typach niebędących enumem są odrzucane.
+`qualified_only` wymaga `E_State.Running` poza domyślną wartością deklarowanego
+enumu. `strict` zachowuje tożsamość typu: odrzuca arytmetykę, przypisania z innych
+enumów i zmiennych całkowitych. Pozwala przypisać stałe wyrażenie całkowite tylko
+wtedy, gdy jego wartość odpowiada zadeklarowanemu członkowi; wynik jest wartością
+enumu. Dotyczy to również inicjalizatorów i wejść wartościowych. `VAR_IN_OUT`
+i mapowania wyjściowe wymagają dokładnego typu enumu. Enumy bez `strict` zachowują
+wcześniejsze reguły nominalne. Python nadal przyjmuje nazwę członka lub `EnumValue`,
+a odrzuca surowe liczby i bool; atrybut nie dodaje ogólnej konwersji w runtime.
+
+### Trzy przenośniki: start, zablokowanie, reset i ponowny start
+
+`examples/conveyor_actions/` zawiera sześć ręcznie napisanych plików w natywnym
+formacie `.TcPOU`/`.TcDUT`/`.TcGVL`. Nie są eksportem z IDE i nie wykonano ich
+na TwinCAT. Testy uruchamiają je w tc-emulator; nie dowodzą zgodności z Beckhoff.
+Wspólna GVL przechowuje wejścia `start`, `blocked`, `reset`, konfigurację i wyjścia.
+Każdy FB ma osobne timery startu i zablokowania. Bazowe akcje sterują stanem
+`Stopped`/`Starting`/`Running`/`Fault`; nadpisana akcja `UpdateOutputs` wywołuje
+`SUPER^.UpdateOutputs()` i wyznacza alarm. PROGRAM wykonuje kolejno
+`ReadInputs`, `ControlConveyors`, `WriteOutputs`. Z katalogu repozytorium:
+
+```python
+from pathlib import Path
+from tc_emulator import Runtime
+
+rt = Runtime.from_files(sorted(Path("examples/conveyor_actions").glob("*.Tc*")))
+for index in range(1, 4):
+    rt.global_cell("GVL_Line", "start").element(index).value = True
+rt.call_action("MAIN_Line", "ReadInputs")
+rt.call_action("MAIN_Line", "ControlConveyors")
+rt.call_action("MAIN_Line", "WriteOutputs")  # t=0: wszystkie Starting
+running = rt.global_cell("GVL_Line", "running")
+assert running.value == (False, False, False)
+for elapsed, expected in (
+    (100, (True, False, False)),
+    (150, (True, True, False)),
+    (250, (True, True, True)),
+):
+    rt.advance_time(elapsed)
+    rt.scan("MAIN_Line")
+    assert running.value == expected
+
+rt.global_cell("GVL_Line", "blocked").element(2).value = True
+rt.scan("MAIN_Line")  # t=500: początek blokady drugiego przenośnika
+rt.advance_time(300)
+rt.scan("MAIN_Line")  # t=800: tylko drugi Fault
+second = rt.program_fb("MAIN_Line", "conveyors", 2)
+assert second.output("state").name == "FAULT"
+assert running.value == (True, False, True)
+rt.global_cell("GVL_Line", "blocked").element(2).value = False
+rt.scan("MAIN_Line")
+assert second.output("alarm") is True  # Usunięcie przeszkody nie kasuje alarmu.
+rt.global_cell("GVL_Line", "start").element(2).value = False
+rt.global_cell("GVL_Line", "reset").element(2).value = True
+rt.scan("MAIN_Line")
+assert second.output("state").name == "STOPPED"
+rt.global_cell("GVL_Line", "reset").element(2).value = False
+rt.global_cell("GVL_Line", "start").element(2).value = True
+rt.scan("MAIN_Line")
+rt.advance_time(250)
+rt.scan("MAIN_Line")  # t=1050: drugi znowu Running
+assert running.value == (True, True, True)
+assert second.output("alarm") is False
+second.call_action("UpdateOutputs")  # Tylko wyjścia, bez ponownego sterowania.
+for index in range(1, 4):
+    fb = rt.program_fb("MAIN_Line", "conveyors", index)
+    assert fb.output("initTrace") == 12345
+    assert fb.output("baseInitCount") == fb.output("derivedInitCount") == 1
+    assert fb.output("afterInitCount") == 1
+```
+
+Wejście w `Starting` następuje w pierwszym skanie z `start = TRUE`; opóźnienia
+wynoszą 100/250/500 ms od tego skanu. Ciągła blokada w Starting albo Running
+przez 300 ms daje Fault w skanie osiągającym termin; przerwanie blokady zeruje
+ten timer. Reset podczas blokady jest ignorowany; poprawny reset daje Stopped,
+a następny skan z żądaniem startu rozpoczyna nowe pełne opóźnienie. Stan Fault
+pozostaje zatrzaśnięty także po wyłączeniu startu/konfiguracji. Czas jest jawny:
+`advance_time` nie skanuje kodu. Liczniki `FB_init` pozostają równe jeden.
+Testy: `.venv/bin/python -m pytest examples/test_conveyor_actions.py -q`.
+Ograniczenia cyklu życia z v0.15, w tym brak restartu PLC/online change, pozostają.
 
 ## Arytmetyka: profil checked-subset
 

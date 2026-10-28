@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <DUT Name="E_ConveyorState">
+    <Declaration><![CDATA[{attribute 'strict'}
+{attribute 'qualified_only'}
+TYPE E_ConveyorState : (Stopped := 0, Starting := 1, Running := 2, Fault := 3);
+END_TYPE
+]]></Declaration>
+  </DUT>
+</TcPlcObject>

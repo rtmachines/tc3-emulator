@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_ConveyorBase">
+    <Declaration><![CDATA[{attribute 'call_after_init'}
+FUNCTION_BLOCK FB_ConveyorBase
+VAR_INPUT
+    enable : BOOL := TRUE;
+    start : BOOL;
+    reset : BOOL;
+    blocked : BOOL;
+    BlockTimeout : TIME := T#300ms;
+    StartDelay : TIME := T#100ms;
+END_VAR
+VAR_OUTPUT
+    state : E_ConveyorState := E_ConveyorState.Stopped;
+    id : DINT;
+    running : BOOL;
+    actualSpeed : LREAL;
+    ready : BOOL;
+    initTrace : DINT;
+    baseInitCount : DINT;
+    afterInitCount : DINT;
+END_VAR
+VAR
+    config : REFERENCE TO ST_ConveyorConfig;
+    startTimer : TON;
+    blockTimer : TON;
+    factor : LREAL;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[EvaluateState();
+UpdateOutputs();
+]]></ST></Implementation>
+    <Method Name="FB_init">
+      <Declaration><![CDATA[METHOD PUBLIC FB_init : BOOL
+VAR_INPUT
+    bInitRetains : BOOL;
+    bInCopyCode : BOOL;
+    conveyorId : DINT;
+    sharedConfig : REFERENCE TO ST_ConveyorConfig;
+END_VAR
+]]></Declaration>
+      <Implementation><ST><![CDATA[id := conveyorId;
+config REF= sharedConfig;
+baseInitCount := baseInitCount + 1;
+initTrace := initTrace * 10 + 1;
+FB_init := TRUE;
+]]></ST></Implementation>
+    </Method>
+    <Property Name="SpeedFactor">
+      <Declaration><![CDATA[PROPERTY PUBLIC SpeedFactor : LREAL
+]]></Declaration>
+      <Get Name="Get">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[SpeedFactor := factor;
+]]></ST></Implementation>
+      </Get>
+      <Set Name="Set">
+        <Declaration><![CDATA[]]></Declaration>
+        <Implementation><ST><![CDATA[factor := SpeedFactor;
+(* Instrumentation of this example's setup order. *)
+initTrace := initTrace * 10 + 3;
+]]></ST></Implementation>
+      </Set>
+    </Property>
+    <Method Name="AfterInit">
+      <Declaration><![CDATA[{attribute 'call_after_init'}
+METHOD PUBLIC AfterInit
+]]></Declaration>
+      <Implementation><ST><![CDATA[afterInitCount := afterInitCount + 1;
+initTrace := initTrace * 10 + 4;
+]]></ST></Implementation>
+    </Method>
+    <Action Name="EvaluateState" Id="{dea59cf8-b235-40a5-ade5-d13ddf675f54}">
+      <Implementation><ST><![CDATA[IF state = E_ConveyorState.Fault THEN
+    IF reset AND NOT blocked THEN
+        state := E_ConveyorState.Stopped;
+    END_IF;
+ELSIF NOT (ready AND enable AND start AND_THEN config.enabled) THEN
+    state := E_ConveyorState.Stopped;
+ELSIF state = E_ConveyorState.Stopped THEN
+    state := E_ConveyorState.Starting;
+END_IF;
+
+startTimer(IN := state = E_ConveyorState.Starting OR state = E_ConveyorState.Running,
+           PT := StartDelay);
+blockTimer(IN := (state = E_ConveyorState.Starting OR state = E_ConveyorState.Running)
+                 AND blocked, PT := BlockTimeout);
+
+IF (state = E_ConveyorState.Starting OR state = E_ConveyorState.Running)
+   AND blockTimer.Q THEN
+    state := E_ConveyorState.Fault;
+ELSIF state = E_ConveyorState.Starting AND startTimer.Q THEN
+    state := E_ConveyorState.Running;
+END_IF;
+]]></ST></Implementation>
+    </Action>
+    <Action Name="UpdateOutputs" Id="{ce6bf028-987a-4b03-be5a-edcfb7c6faa5}">
+      <Implementation><ST><![CDATA[running := state = E_ConveyorState.Running;
+IF running THEN
+    actualSpeed := config.speed * factor;
+ELSE
+    actualSpeed := 0.0;
+END_IF;
+]]></ST></Implementation>
+    </Action>
+  </POU>
+</TcPlcObject>
