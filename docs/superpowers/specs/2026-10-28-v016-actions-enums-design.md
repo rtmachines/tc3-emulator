@@ -36,6 +36,11 @@ not evidence of execution on Beckhoff TwinCAT.
   Calls may bind the owner's inputs/inouts and output mappings using the existing
   FB named-call rules. Local action calls reuse currently bound IN_OUT arguments;
   external calls require IN_OUT bindings. Inputs retain values when omitted.
+  The I/O contract comes from the checked receiver type for external ST calls,
+  the concrete handle type for Python, and the lexical caller/base owner for
+  local/THIS/SUPER calls. It is independent of the dynamically selected action
+  body, so derived-only inputs can bind an inherited action through a derived
+  receiver and derived IN_OUT arguments remain required externally.
 - Execute only the selected action, never the owner's main body or FB_init.
   Actions share the persistent owner state. Calls inside an active owner body
   share its VAR_TEMP activation; nested actions preserve this activation and
