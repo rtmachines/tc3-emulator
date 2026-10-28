@@ -104,6 +104,8 @@ class Registry(dict[str, Pou]):
         self.types: dict[str, TypeSpec] = {}
         self.enum_values: dict[int, EnumValue] = {}
         self.interfaces: dict[str, InterfaceDecl] = {}
+        self.interface_ancestors: dict[str, frozenset[str]] = {}
+        self.interface_methods: dict[tuple[str, str], str] = {}
         self.prototype_pous: dict[str, Pou] = {}
         self.implementers: dict[str, set[str]] = {}
         self.valid_reference_calls: dict[int, LValue] = {}
@@ -156,6 +158,13 @@ class Registry(dict[str, Pou]):
     def method_for(self, owner: str, name: str) -> Pou | None:
         qualified = self.effective_methods.get((owner, name), f"{owner}.{name}")
         return self.get(qualified)
+
+    def interface_method_for(self, owner: str, name: str) -> Pou | None:
+        qualified = self.interface_methods.get((owner, name))
+        return self.prototype_pous.get(qualified)
+
+    def interface_assignable(self, actual: InterfaceType, expected: InterfaceType) -> bool:
+        return expected.name in self.interface_ancestors.get(actual.name, frozenset())
 
     def action_for(self, owner: str, name: str) -> Pou | None:
         qualified = self.effective_actions.get((owner, name), f"{owner}.{name}")
@@ -267,6 +276,7 @@ class _Validator:
                     self.fail(f"Unknown interface {name}", pou.loc)
                 self.pous.implementers[name].add(pou.name)
         self.inheritance_graph()
+        self.interface_inheritance()
         methods = []
         for owner in self.program.pous:
             if (owner.methods or owner.properties) and owner.kind != "FUNCTION_BLOCK":
@@ -408,6 +418,42 @@ class _Validator:
             for owner in chain:
                 for interface in self.pous[owner].implements:
                     self.pous.implementers[interface].add(name)
+
+    def interface_inheritance(self) -> None:
+        """Validate all interface bases, then close ancestry in iterative postorder."""
+        interfaces = self.pous.interfaces
+        for interface in interfaces.values():
+            if len(set(interface.extends)) != len(interface.extends):
+                self.fail("Duplicate interface EXTENDS base", interface.loc)
+            for base in interface.extends:
+                if base not in interfaces:
+                    self.fail(f"Invalid interface EXTENDS base {base}", interface.loc)
+        ancestors = self.pous.interface_ancestors
+        for name in interfaces:
+            if name in ancestors:
+                continue
+            active = {name}
+            stack = [(name, iter(interfaces[name].extends))]
+            while stack:
+                current, bases = stack[-1]
+                base = next(bases, None)
+                if base is None:
+                    closure = {current}
+                    for parent in interfaces[current].extends:
+                        closure.update(ancestors[parent])
+                    ancestors[current] = frozenset(closure)
+                    active.remove(current)
+                    stack.pop()
+                elif base in active:
+                    self.fail(
+                        f"Cyclic interface inheritance involving {base}", interfaces[current].loc
+                    )
+                elif base not in ancestors:
+                    active.add(base)
+                    stack.append((base, iter(interfaces[base].extends)))
+        for name, closure in ancestors.items():
+            for base in closure:
+                self.pous.implementers[base].update(self.pous.implementers[name])
 
     def inherited_members(self, *, resolved: bool = False) -> None:
         """Build effective member tables without changing any declaration's owner."""
@@ -651,7 +697,7 @@ class _Validator:
                 expr.loc,
             )
         actual = self.reference(expr, pou)
-        if actual == expected:
+        if isinstance(actual, InterfaceType) and self.pous.interface_assignable(actual, expected):
             return
         if isinstance(actual, str) and actual in self.pous.implementers[expected.name]:
             return
@@ -812,9 +858,45 @@ class _Validator:
                 interface, methods=tuple(methods), properties=tuple(properties)
             )
 
-        for name, interface in self.pous.interfaces.items():
+        effective: dict[str, dict[str, Pou | Property]] = {}
+        for name in self.pous.interface_ancestors:
+            interface = self.pous.interfaces[name]
+            members: dict[str, Pou | Property] = {}
+
+            def merge(member: Pou | Property) -> None:
+                member_name = member.result_name if isinstance(member, Pou) else member.name
+                previous = members.get(member_name)
+                if previous is not None:
+                    matches = (
+                        self.same_interface_method_signature(previous, member)
+                        if isinstance(previous, Pou) and isinstance(member, Pou)
+                        else self.same_interface_property_signature(previous, member)
+                        if isinstance(previous, Property) and isinstance(member, Property)
+                        else False
+                    )
+                    if not matches:
+                        self.fail(
+                            f"Conflicting inherited interface member {name}.{member_name}",
+                            interface.loc,
+                        )
+                else:
+                    members[member_name] = member
+
+            for base in interface.extends:
+                for member in effective[base].values():
+                    merge(member)
+            for member in (*interface.methods, *interface.properties):
+                merge(member)
+            effective[name] = members
+            for member_name, member in members.items():
+                if isinstance(member, Pou):
+                    self.pous.interface_methods[name, member_name] = member.name
+                else:
+                    self.pous.properties[name, member_name] = member
+
+        for name, members in effective.items():
             for owner in sorted(self.pous.implementers[name]):
-                for required in interface.methods:
+                for required in (m for m in members.values() if isinstance(m, Pou)):
                     actual = self.pous.method_for(owner, required.result_name)
                     if actual is None or actual.kind != "METHOD" or actual.access != "PUBLIC":
                         self.fail(
@@ -849,7 +931,7 @@ class _Validator:
                                 f"Interface method {required.name} parameter/default mismatch",
                                 given.loc,
                             )
-                for required in interface.properties:
+                for required in (m for m in members.values() if isinstance(m, Property)):
                     actual = self.pous.properties.get((owner, required.name))
                     if (
                         actual is None
@@ -868,6 +950,34 @@ class _Validator:
                                     f"Interface property {name}.{required.name} requires PUBLIC {kind}",
                                     actual.loc,
                                 )
+
+    @staticmethod
+    def same_interface_method_signature(left: Pou, right: Pou) -> bool:
+        return (
+            left.result_name == right.result_name
+            and same_type(left.return_type, right.return_type)
+            and len(left.variables) == len(right.variables)
+            and all(
+                a.name == b.name
+                and a.section == b.section
+                and same_type(a.type_name, b.type_name)
+                and (
+                    a.section != "VAR_INPUT"
+                    or (a.initial is None) == (b.initial is None)
+                    and a.default == b.default
+                )
+                for a, b in zip(left.variables, right.variables)
+            )
+        )
+
+    @staticmethod
+    def same_interface_property_signature(left: Property, right: Property) -> bool:
+        return (
+            left.name == right.name
+            and same_type(left.type_name, right.type_name)
+            and (left.getter is None) == (right.getter is None)
+            and (left.setter is None) == (right.setter is None)
+        )
 
     @staticmethod
     def fail(message: str, loc: Location) -> None:
@@ -2472,7 +2582,7 @@ class _Validator:
         else:
             kind = self.reference(receiver, pou)
             target = (
-                self.pous.prototype_pous.get(f"{kind.name}.{method_name}")
+                self.pous.interface_method_for(kind.name, method_name)
                 if isinstance(kind, InterfaceType)
                 else self.pous.method_for(kind, method_name)
                 if isinstance(kind, str)

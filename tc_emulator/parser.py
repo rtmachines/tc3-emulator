@@ -348,6 +348,15 @@ class _Parser:
     def interface_declaration(self) -> InterfaceDecl:
         start = self.expect("INTERFACE")
         name = self.expect("ID").text
+        extends = []
+        if self.accept("EXTENDS"):
+            while True:
+                base = self.expect("ID")
+                if base.text in extends:
+                    raise ParseError(f"Duplicate interface base {base.text}", base.loc)
+                extends.append(base.text)
+                if not self.accept(","):
+                    break
         methods = []
         properties = []
         while self.token.kind in {"METHOD", "PROPERTY"}:
@@ -356,7 +365,7 @@ class _Parser:
             else:
                 properties.append(self.property_declaration(name, prototype=True))
         self.expect("END_INTERFACE")
-        return InterfaceDecl(name, tuple(methods), tuple(properties), start.loc)
+        return InterfaceDecl(name, tuple(methods), tuple(properties), start.loc, tuple(extends))
 
     def variable_declarations(
         self, section: str, ending: str, *, constant: bool = False

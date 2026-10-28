@@ -100,7 +100,6 @@ def test_tcio_preserves_interface_method_property_and_accessor_declaration_locat
         interface_xml(name="Other"),
         interface_xml(name="I_Motor "),
         interface_xml(name="I.Motor"),
-        interface_xml(declaration="INTERFACE I_Motor EXTENDS I_Base"),
         interface_xml(declaration="INTERFACE I_Motor METHOD Hidden END_METHOD"),
         interface_xml(declaration="INTERFACE I_Motor PROPERTY P : INT GET END_GET END_PROPERTY"),
         interface_xml(declaration="INTERFACE I_Motor END_INTERFACE INTERFACE Hidden"),

@@ -312,6 +312,7 @@ class InterfaceDecl:
     methods: tuple[Pou, ...]
     properties: tuple[Property, ...]
     loc: Location
+    extends: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

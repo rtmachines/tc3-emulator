@@ -107,7 +107,6 @@ INTERFACE I_Status END_INTERFACE""",
         "PROPERTY P : INT GET P := 1; END_GET END_PROPERTY",
         "VAR x : INT; END_VAR",
         "M();",
-        "EXTENDS I_Other",
     ],
 )
 def test_interfaces_reject_executable_private_and_storage_members(members):

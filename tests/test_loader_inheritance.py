@@ -124,7 +124,6 @@ def test_tcpou_rejects_invalid_inheritance_and_declaration_injection(tmp_path, t
 @pytest.mark.parametrize(
     "header,member",
     [
-        ("INTERFACE I EXTENDS I_Base", ""),
         (
             "INTERFACE I",
             '<Method Name="Run"><Declaration>METHOD PROTECTED Run</Declaration></Method>',
@@ -141,7 +140,7 @@ def test_tcpou_rejects_invalid_inheritance_and_declaration_injection(tmp_path, t
         ),
     ],
 )
-def test_tcio_keeps_rejecting_inheritance_and_nonpublic_contracts(tmp_path, header, member):
+def test_tcio_keeps_rejecting_nonpublic_contracts(tmp_path, header, member):
     text = (
         f'<TcPlcObject><Itf Name="I"><Declaration>{header}</Declaration>'
         f"{member}</Itf></TcPlcObject>"
