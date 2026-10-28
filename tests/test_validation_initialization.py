@@ -204,3 +204,17 @@ def test_var_inst_cannot_capture_implicit_method_result(expression, phase):
         END_FUNCTION_BLOCK
         FUNCTION_BLOCK B METHOD Read : INT VAR_INST child : {declaration}; END_VAR
         Read := 1; END_METHOD END_FUNCTION_BLOCK""")
+
+
+@pytest.mark.parametrize(
+    "kind", ["INT(7)", "INT()", "INT(DoesNotExist())", "ARRAY[1..1] OF INT[(7)]"]
+)
+@pytest.mark.parametrize("context", ["struct", "interface"])
+def test_unused_non_fb_declaration_contexts_reject_initialization_arguments(kind, context):
+    source = (
+        f"TYPE Unused : STRUCT n : {kind}; END_STRUCT END_TYPE"
+        if context == "struct"
+        else f"INTERFACE I METHOD M VAR_INPUT n : {kind}; END_VAR END_METHOD END_INTERFACE"
+    )
+    with pytest.raises(ValidationError, match="Initialization arguments require"):
+        check(source)

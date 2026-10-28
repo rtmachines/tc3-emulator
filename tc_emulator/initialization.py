@@ -126,7 +126,7 @@ def initialization_declarations(v: _Validator, pou: st.Pou) -> None:
                     v.fail(f"Duplicate initialization argument {parameter.name}", arg.loc)
                 if arg.mode != (":=" if arg.name is not None else ""):
                     v.fail("Initialization arguments require :=", arg.loc)
-                scoped_setup_expression(v, arg.value, parameter.type_name, scope, var)
+                scoped_setup_expression(v, arg.value, parameter.type_name, pou, var)
                 bound[parameter.name] = arg.value
             for parameter in formal:
                 if parameter.name not in bound and parameter.initial is None:
@@ -162,7 +162,7 @@ def initialization_declarations(v: _Validator, pou: st.Pou) -> None:
                         v.fail(
                             f"Unknown writable public post-init input/property {field}", post.loc
                         )
-                    scoped_setup_expression(v, expr, expected, scope, var)
+                    scoped_setup_expression(v, expr, expected, pou, var)
                     posts.append((field, expr))
             setups.append((tuple(bound.items()), tuple(posts)))
         v.pous.instance_initializers[pou.name, var.name] = tuple(setups)
@@ -170,14 +170,19 @@ def initialization_declarations(v: _Validator, pou: st.Pou) -> None:
 
 
 def scoped_setup_expression(
-    v: _Validator, expr: st.Expr, expected, scope: st.Pou, var: st.VarDecl
+    v: _Validator, expr: st.Expr, expected, pou: st.Pou, var: st.VarDecl
 ) -> None:
-    """Expose a persistent method bank and its owner, excluding transient locals."""
+    """Use resolved types while retaining the declaration's lexical visibility."""
+    scope = v.declaration_scope(pou, var)
     original = v.variables[scope.name]
     if var.section == "VAR_INST":
         v.variables[scope.name] = {
             name: item for name, item in original.items() if item.section == "VAR_INST"
         }
+    else:
+        # PROPERTY headers are copied into both accessors. Keep header names
+        # only, but take their resolved declarations from the current accessor.
+        v.variables[scope.name] = {name: v.variables[pou.name][name] for name in original}
     try:
         setup_expression(v, expr, expected, scope, var)
     finally:

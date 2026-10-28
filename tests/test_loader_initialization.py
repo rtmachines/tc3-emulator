@@ -2,7 +2,8 @@
 
 import pytest
 
-from tc_emulator.errors import ParseError
+from tc_emulator import Runtime
+from tc_emulator.errors import ParseError, ValidationError
 from tc_emulator.loader import load_files
 from tc_emulator.syntax import ArrayInitializer, Location, StructInitializer
 
@@ -123,3 +124,29 @@ def test_tcpou_attributes_do_not_bypass_declaration_or_metadata_boundaries(
     path.write_text(tcpou(declaration, methods, body), encoding="utf-8")
     with pytest.raises(ParseError):
         load_files([path])
+
+
+@pytest.mark.parametrize("kind", ["INT(7)", "INT(DoesNotExist())", "ARRAY[1..1] OF INT[(7)]"])
+@pytest.mark.parametrize("context", ["struct", "interface"])
+def test_native_unused_non_fb_declarations_reject_initialization_arguments(tmp_path, kind, context):
+    if context == "struct":
+        path = tmp_path / "Unused.TcDUT"
+        xml = (
+            '<TcPlcObject><DUT Name="Unused"><Declaration><![CDATA['
+            f"TYPE Unused : STRUCT n : {kind}; END_STRUCT END_TYPE"
+            "]]></Declaration></DUT></TcPlcObject>"
+        )
+        section = ":Declaration"
+    else:
+        path = tmp_path / "Unused.TcIO"
+        xml = (
+            '<TcPlcObject><Itf Name="Unused"><Declaration>INTERFACE Unused</Declaration>'
+            '<Method Name="M"><Declaration><![CDATA['
+            f"METHOD M VAR_INPUT n : {kind}; END_VAR"
+            "]]></Declaration></Method></Itf></TcPlcObject>"
+        )
+        section = ":Method:M:Declaration"
+    path.write_text(xml, encoding="utf-8")
+    with pytest.raises(ValidationError, match="Initialization arguments require") as caught:
+        Runtime.from_files([path])
+    assert caught.value.loc.source == f"{path}{section}"

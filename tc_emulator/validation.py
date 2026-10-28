@@ -674,6 +674,7 @@ class _Validator:
             variables = []
             names = set()
             for var in raw.variables:
+                self.initialization_arguments(var)
                 if (
                     var.constant
                     or var.section not in {"VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT"}
@@ -1586,6 +1587,7 @@ class _Validator:
                 names = set()
                 fields = []
                 for field in definition.fields:
+                    self.initialization_arguments(field)
                     if field.name in names:
                         self.fail(f"Duplicate structure field {field.name}", field.loc)
                     names.add(field.name)
@@ -1618,6 +1620,13 @@ class _Validator:
             self.resolving.remove(name)
         self.pous.types[name] = result
         return result
+
+    def initialization_arguments(self, var: VarDecl, *, fb_instance: bool = False) -> None:
+        """All declaration contexts must reject FB-only setup metadata on values."""
+        if (
+            var.init_arguments is not None or var.element_init_arguments is not None
+        ) and not fb_instance:
+            self.fail("Initialization arguments require a function-block instance", var.loc)
 
     def declarations(self, pou: Pou) -> None:
         original = pou
@@ -1693,10 +1702,9 @@ class _Validator:
                         )
                 except (TypeError, ValueError) as error:
                     self.fail(str(error), var.loc)
-            if (var.init_arguments is not None or var.element_init_arguments is not None) and not (
-                target is not None and target.kind == "FUNCTION_BLOCK"
-            ):
-                self.fail("Initialization arguments require a function-block instance", var.loc)
+            self.initialization_arguments(
+                var, fb_instance=target is not None and target.kind == "FUNCTION_BLOCK"
+            )
             variables[var.name] = var
         self.variables[pou.name] = variables
         prepared = replace(pou, variables=tuple(variables.values()))

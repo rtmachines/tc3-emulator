@@ -501,3 +501,35 @@ def test_accessor_local_fb_initializer_keeps_accessor_locals_visible():
     END_PROPERTY END_FUNCTION_BLOCK
     """)
     assert rt.instantiate("B").get_property("Value") == 9
+
+
+@pytest.mark.parametrize("accessor", ["GET", "SET"])
+@pytest.mark.parametrize("phase", ["init", "post"])
+@pytest.mark.parametrize("kind,field", [("Num := 2", "data"), ("S", "data.n")])
+def test_property_header_fb_initialization_resolves_alias_and_struct_types(
+    accessor, phase, kind, field
+):
+    declaration = (
+        f"Leaf(seed := {field} + n)" if phase == "init" else f"Leaf := (value := {field} + n)"
+    )
+    rt = Runtime.from_source(f"""
+    TYPE Num : INT; END_TYPE
+    TYPE S : STRUCT n : INT := 2; END_STRUCT END_TYPE
+    VAR_GLOBAL n : INT := 2; END_VAR
+    {{attribute 'call_after_init'}} FUNCTION_BLOCK Leaf
+    VAR_INPUT value : INT; END_VAR VAR_OUTPUT seen : INT; END_VAR
+    METHOD FB_init : BOOL {FLAGS} VAR_INPUT seed : INT := 0; END_VAR
+    value := seed; END_METHOD
+    {{attribute 'call_after_init'}} METHOD Hook seen := value; END_METHOD END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B VAR_OUTPUT seen : INT; END_VAR
+    PROPERTY Value : INT VAR data : {kind}; child : {declaration}; END_VAR
+    GET VAR n : INT := 9; END_VAR Value := child.seen; END_GET
+    SET VAR n : INT := 9; END_VAR seen := child.seen; END_SET
+    END_PROPERTY END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    if accessor == "GET":
+        assert fb.get_property("Value") == 4
+    else:
+        fb.set_property("Value", 7)
+        assert fb.output("seen") == 4
