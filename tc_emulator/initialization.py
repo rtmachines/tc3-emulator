@@ -95,6 +95,17 @@ def initialization_declarations(v: _Validator, pou: st.Pou) -> None:
         methods = v.pous.initialization_methods.get(name, ())
         formal = parameters(methods[-1])[2:] if methods else ()
         scope = v.declaration_scope(pou, var)
+        visible = {
+            name
+            for name, item in v.variables[scope.name].items()
+            if var.section != "VAR_INST" or item.section == "VAR_INST"
+        }
+        if (
+            var.section != "VAR_INST"
+            and scope.return_type is not None
+            and scope.kind in {"FUNCTION", "METHOD", "PROPERTY_GET", "PROPERTY_SET"}
+        ):
+            visible.add(scope.result_name)
         setups = []
         for arguments, post in zip(argument_lists, post_values):
             named = [arg.name is not None for arg in arguments]
@@ -155,6 +166,7 @@ def initialization_declarations(v: _Validator, pou: st.Pou) -> None:
                     posts.append((field, expr))
             setups.append((tuple(bound.items()), tuple(posts)))
         v.pous.instance_initializers[pou.name, var.name] = tuple(setups)
+        v.pous.initialization_scopes[pou.name, var.name] = scope, frozenset(visible)
 
 
 def scoped_setup_expression(
@@ -202,6 +214,12 @@ def setup_expression(
                 if binding is not None:
                     owner, target, _ = binding
                     check_storage(owner, target, node.loc)
+                elif (
+                    persistent
+                    and scope.kind in {"FUNCTION", "METHOD", "PROPERTY_GET", "PROPERTY_SET"}
+                    and node.parts[0] == scope.result_name
+                ):
+                    v.fail("Persistent initialization cannot capture invocation storage", node.loc)
             elif isinstance(node, st.Index):
                 inspect(node.base)
                 for index in node.indices:
@@ -258,9 +276,14 @@ def initialization_edges(v: _Validator) -> None:
                 callers = [f"$INIT:{pou.name}"]
             else:
                 callers = [pou.name]
+            declaration_owner = (
+                v.fb_variable(pou.name, var.name)[0].name
+                if pou.kind == "FUNCTION_BLOCK"
+                else pou.name
+            )
             for caller in callers:
                 v.calls[caller].add(f"$INIT:{target}")
-                for setup in v.pous.instance_initializers.get((pou.name, var.name), ()):
+                for setup in v.pous.instance_initializers.get((declaration_owner, var.name), ()):
                     for field, _ in setup[1]:
                         prop = v.pous.properties.get((target, field))
                         if prop is not None:

@@ -125,6 +125,7 @@ class Registry(dict[str, Pou]):
         self.initialization_methods: dict[str, tuple[Pou, ...]] = {}
         self.initialization_hooks: dict[str, tuple[Pou, ...]] = {}
         self.instance_initializers: dict[tuple[str, str], tuple[InstanceSetup, ...]] = {}
+        self.initialization_scopes: dict[tuple[str, str], tuple[Pou, frozenset[str]]] = {}
 
     @staticmethod
     def lexical_owner(pou: Pou) -> str | None:

@@ -236,6 +236,15 @@ class Engine:
         ctx: Context,
     ) -> None:
         setups = self.registry.instance_initializers.get((scope.pou.name, decl.name), ())
+        if not setups:
+            return
+        declaration, visible = self.registry.initialization_scopes[scope.pou.name, decl.name]
+        scope = Frame(
+            declaration,
+            {name: value for name, value in scope.slots.items() if name in visible},
+            lifetime=scope.lifetime,
+            method_owner=scope.method_owner,
+        )
         for child, (arguments, posts) in zip(self.storage_frames(storage), setups):
             methods = self.registry.initialization_methods.get(child.pou.name, ())
             formal = {var.name: var for var in methods[-1].variables} if methods else {}

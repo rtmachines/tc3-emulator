@@ -436,3 +436,68 @@ def test_all_temporary_child_references_are_prepared_before_first_constructor():
     fb = rt.instantiate("Owner")
     fb.call()
     assert fb.output("seen") == 9
+
+
+@pytest.mark.parametrize("accessor", ["GET", "SET"])
+@pytest.mark.parametrize("phase", ["init", "post"])
+def test_property_header_fb_initialization_ignores_accessor_value_shadow(accessor, phase):
+    declaration = "Leaf(seed := n)" if phase == "init" else "Leaf := (value := n)"
+    rt = Runtime.from_source(f"""
+    VAR_GLOBAL n : INT := 2; END_VAR
+    {{attribute 'call_after_init'}} FUNCTION_BLOCK Leaf
+    VAR_INPUT value : INT; END_VAR VAR_OUTPUT seen : INT; END_VAR
+    METHOD FB_init : BOOL {FLAGS} VAR_INPUT seed : INT := 0; END_VAR
+    value := seed; END_METHOD
+    {{attribute 'call_after_init'}} METHOD Hook seen := value; END_METHOD END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B VAR_OUTPUT seen : INT; END_VAR
+    PROPERTY Value : INT VAR child : {declaration}; END_VAR
+    GET VAR n : INT := 9; END_VAR Value := child.seen; END_GET
+    SET VAR n : INT := 9; END_VAR seen := child.seen; END_SET
+    END_PROPERTY END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    if accessor == "GET":
+        assert fb.get_property("Value") == 2
+    else:
+        fb.set_property("Value", 7)
+        assert fb.output("seen") == 2
+
+
+@pytest.mark.parametrize("accessor", ["GET", "SET"])
+@pytest.mark.parametrize("phase", ["init", "post"])
+def test_property_header_fb_initialization_preserves_reference_identity(accessor, phase):
+    declaration = "Leaf(seed := n)" if phase == "init" else "Leaf := (ref := n)"
+    rt = Runtime.from_source(f"""
+    VAR_GLOBAL n : INT := 2; END_VAR
+    {{attribute 'call_after_init'}} FUNCTION_BLOCK Leaf
+    VAR_INPUT ref : REFERENCE TO INT := 0; END_VAR VAR_OUTPUT seen : INT; END_VAR
+    METHOD FB_init : BOOL {FLAGS} VAR_INPUT seed : REFERENCE TO INT := 0; END_VAR
+    ref REF= seed; END_METHOD
+    {{attribute 'call_after_init'}} METHOD Hook ref := ref + 1; seen := ref; END_METHOD
+    END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B VAR_OUTPUT seen : INT; END_VAR
+    PROPERTY Value : INT VAR child : {declaration}; END_VAR
+    GET VAR n : INT := 9; END_VAR Value := child.seen; END_GET
+    SET VAR n : INT := 9; END_VAR seen := child.seen; END_SET
+    END_PROPERTY END_FUNCTION_BLOCK
+    """)
+    fb = rt.instantiate("B")
+    if accessor == "GET":
+        assert fb.get_property("Value") == 3
+    else:
+        fb.set_property("Value", 7)
+        assert fb.output("seen") == 3
+    assert rt.global_cell("GVL", "n").value == 3
+
+
+def test_accessor_local_fb_initializer_keeps_accessor_locals_visible():
+    rt = Runtime.from_source(f"""
+    VAR_GLOBAL n : INT := 2; END_VAR
+    FUNCTION_BLOCK Leaf VAR_OUTPUT seen : INT; END_VAR
+    METHOD FB_init : BOOL {FLAGS} VAR_INPUT n : INT; END_VAR seen := n; END_METHOD
+    END_FUNCTION_BLOCK
+    FUNCTION_BLOCK B PROPERTY Value : INT
+    GET VAR n : INT := 9; child : Leaf(n); END_VAR Value := child.seen; END_GET
+    END_PROPERTY END_FUNCTION_BLOCK
+    """)
+    assert rt.instantiate("B").get_property("Value") == 9

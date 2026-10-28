@@ -181,3 +181,26 @@ else:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=5
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_inherited_post_init_setter_cycle_is_rejected_before_execution():
+    with pytest.raises(ValidationError, match="Recursive call cycle"):
+        check("""FUNCTION_BLOCK Leaf
+        PROPERTY P : INT SET F(); END_SET END_PROPERTY END_FUNCTION_BLOCK
+        FUNCTION_BLOCK A VAR child : Leaf := (P := 1); END_VAR END_FUNCTION_BLOCK
+        FUNCTION_BLOCK B EXTENDS A END_FUNCTION_BLOCK
+        FUNCTION F : INT VAR b : B; END_VAR F := 1; END_FUNCTION""")
+
+
+@pytest.mark.parametrize("expression", ["Read", "Read + 1"])
+@pytest.mark.parametrize("phase", ["init", "post"])
+def test_var_inst_cannot_capture_implicit_method_result(expression, phase):
+    declaration = (
+        f"Leaf(seed := {expression})" if phase == "init" else f"Leaf := (n := {expression})"
+    )
+    with pytest.raises(ValidationError, match="invocation storage"):
+        check(f"""FUNCTION_BLOCK Leaf VAR_INPUT n : INT; END_VAR
+        METHOD FB_init : BOOL {FLAGS} VAR_INPUT seed : INT := 0; END_VAR END_METHOD
+        END_FUNCTION_BLOCK
+        FUNCTION_BLOCK B METHOD Read : INT VAR_INST child : {declaration}; END_VAR
+        Read := 1; END_METHOD END_FUNCTION_BLOCK""")
