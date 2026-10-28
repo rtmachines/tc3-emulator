@@ -41,6 +41,8 @@ not evidence of execution on Beckhoff TwinCAT.
   local/THIS/SUPER calls. It is independent of the dynamically selected action
   body, so derived-only inputs can bind an inherited action through a derived
   receiver and derived IN_OUT arguments remain required externally.
+  THIS/SUPER remain FB-only; FUNCTION cannot call a PROGRAM action, preserving
+  the existing restriction on FUNCTION-to-PROGRAM calls.
 - Execute only the selected action, never the owner's main body or FB_init.
   Actions share the persistent owner state. Calls inside an active owner body
   share its VAR_TEMP activation; nested actions preserve this activation and
