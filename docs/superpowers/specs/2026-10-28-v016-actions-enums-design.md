@@ -43,6 +43,8 @@ not evidence of execution on Beckhoff TwinCAT.
   locals. A standalone external action creates one temporary owner activation;
   temporary child initialization follows existing activation rules. Lexical base
   scopes must not accidentally resolve a derived owner's or caller's temporaries.
+  Use a lexical-owner-keyed temporary bank within each owner activation; initialize
+  a base bank lazily at most once, and reuse it through nested action calls.
 - FB actions inherit and dispatch virtually, including calls from base code.
   SUPER selects the lexical base implementation. Distinct actions coexist;
   collisions with fields/methods/properties and duplicate action names fail.
