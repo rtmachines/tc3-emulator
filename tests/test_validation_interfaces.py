@@ -41,7 +41,6 @@ def test_contract_resolves_aliases_defaults_and_forward_names():
         "VAR CONSTANT ref : I := 0; END_VAR",
         "VAR_OUTPUT ref : I; END_VAR",
         "VAR_IN_OUT ref : I; END_VAR",
-        "VAR ref : ARRAY[1..2] OF I; END_VAR",
         "VAR ref : I := 1; END_VAR",
         "VAR ref : I := FALSE; END_VAR",
         "VAR ref : I := -0; END_VAR",

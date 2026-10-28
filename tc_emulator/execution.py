@@ -11,6 +11,7 @@ from tc_emulator.memory import (
     Cell,
     FBArray,
     Frame,
+    InterfaceArray,
     InterfaceSlot,
     Lifetime,
     MemoryOwner,
@@ -24,6 +25,7 @@ from tc_emulator.types import (
     INTEGER_TYPES,
     EnumType,
     FBArrayType,
+    InterfaceArrayType,
     InterfaceType,
     ReferenceType,
     StringType,
@@ -129,13 +131,20 @@ class Engine:
 
     def _variable(
         self, decl: st.VarDecl, lifetime: Lifetime | None = None
-    ) -> Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None:
+    ) -> Cell | Frame | FBArray | InterfaceArray | InterfaceSlot | ReferenceSlot | None:
         if decl.section == "VAR_IN_OUT":
             return None
         if isinstance(decl.type_name, ReferenceType):
             return ReferenceSlot(decl.type_name)
         if isinstance(decl.type_name, InterfaceType):
             return InterfaceSlot(decl.type_name)
+        if isinstance(decl.type_name, InterfaceArrayType):
+            return InterfaceArray(
+                decl.type_name,
+                tuple(
+                    InterfaceSlot(decl.type_name.element_type) for _ in range(decl.type_name.size)
+                ),
+            )
         if is_value_type(decl.type_name):
             return Cell(
                 decl.type_name,
@@ -348,7 +357,7 @@ class Engine:
 
     def resolve(
         self, ref: st.LValue, frame: Frame, ctx: Context | None = None
-    ) -> Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot:
+    ) -> Cell | Frame | FBArray | InterfaceArray | InterfaceSlot | ReferenceSlot:
         if isinstance(ref, (st.This, st.Super)):
             return frame.method_owner or frame
         if id(ref) in self.registry.bit_accesses:
@@ -379,7 +388,7 @@ class Engine:
             base = self.resolve(ref.base, frame, ctx)
             if isinstance(base, ReferenceSlot):
                 base = base.capture(ref.loc, dereference=True)
-            if not isinstance(base, (Cell, FBArray)):
+            if not isinstance(base, (Cell, FBArray, InterfaceArray)):
                 raise ExecutionError("Expected array storage", ref.loc)
             try:
                 indices = tuple(self.expression(index, frame, ctx) for index in ref.indices)
@@ -388,9 +397,9 @@ class Engine:
                 raise ExecutionError(str(error), ref.loc) from error
         root = ref.parts[0]
         if root in frame.slots:
-            current: Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None = frame.slots[
-                root
-            ]
+            current: (
+                Cell | Frame | FBArray | InterfaceArray | InterfaceSlot | ReferenceSlot | None
+            ) = frame.slots[root]
         elif self.owner_has(frame, root):
             current = frame.method_owner.slots[root]
         elif root in self.global_frames:

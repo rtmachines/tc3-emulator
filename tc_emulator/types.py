@@ -168,6 +168,32 @@ class FBArrayType:
 
 
 @dataclass(frozen=True)
+class InterfaceArrayType:
+    """Fixed bounds for non-owning interface slots, never a value array."""
+
+    bounds: tuple[tuple[int, int], ...]
+    element_type: InterfaceType
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.element_type, InterfaceType):
+            raise TypeError("Interface array element type requires an interface descriptor")
+        array = ArrayType(self.bounds, self.element_type.name)
+        object.__setattr__(self, "bounds", array.bounds)
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(high - low + 1 for low, high in self.bounds)
+
+    @property
+    def size(self) -> int:
+        return math.prod(self.shape)
+
+    def __str__(self) -> str:
+        bounds = ", ".join(f"{low}..{high}" for low, high in self.bounds)
+        return f"ARRAY[{bounds}] OF {self.element_type}"
+
+
+@dataclass(frozen=True)
 class EnumType:
     name: str
     members: tuple[tuple[str, int], ...]
@@ -315,6 +341,7 @@ TypeSpec = (
     | ArrayType
     | OpenArrayType
     | FBArrayType
+    | InterfaceArrayType
     | StructType
     | EnumType
     | AliasType
@@ -371,7 +398,9 @@ def resolve_type(type_name: TypeSpec, registry: Mapping[str, TypeSpec]) -> TypeS
         if name not in registry:
             raise ValueError(f"Unknown value type {name}")
         resolved = registry[name]
-        if isinstance(resolved, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
+        if isinstance(
+            resolved, (OpenArrayType, FBArrayType, InterfaceArrayType, InterfaceType, ReferenceType)
+        ):
             raise TypeError("Expected a supported value type")
         return resolved
     if isinstance(type_name, ArrayType):
@@ -382,7 +411,9 @@ def resolve_type(type_name: TypeSpec, registry: Mapping[str, TypeSpec]) -> TypeS
 
 
 def value_leaf_count(type_name: TypeSpec) -> int:
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
+    if isinstance(
+        type_name, (OpenArrayType, FBArrayType, InterfaceArrayType, InterfaceType, ReferenceType)
+    ):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, AliasType):
         return value_leaf_count(type_name.target)
@@ -491,7 +522,9 @@ def check_float_literal(type_name: str, value: Scalar, raw_text: str | None = No
 
 def check_value(type_name: TypeSpec, value: object) -> Value:
     """Return a checked scalar or detached immutable array value."""
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
+    if isinstance(
+        type_name, (OpenArrayType, FBArrayType, InterfaceArrayType, InterfaceType, ReferenceType)
+    ):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, StringType):
         if not isinstance(value, str):
@@ -590,7 +623,9 @@ def check_value(type_name: TypeSpec, value: object) -> Value:
 
 def default_value(type_name: TypeSpec) -> Value:
     """Return a fresh immutable default value for a supported PLC type."""
-    if isinstance(type_name, (OpenArrayType, FBArrayType, InterfaceType, ReferenceType)):
+    if isinstance(
+        type_name, (OpenArrayType, FBArrayType, InterfaceArrayType, InterfaceType, ReferenceType)
+    ):
         raise TypeError("Expected a supported value type")
     if isinstance(type_name, AliasType):
         return (

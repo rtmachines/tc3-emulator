@@ -14,6 +14,7 @@ from tc_emulator.types import (
     AliasType,
     ArrayType,
     FBArrayType,
+    InterfaceArrayType,
     InterfaceType,
     ReferenceType,
     StructType,
@@ -284,6 +285,38 @@ class InterfaceSlot:
 
 
 @dataclass
+class InterfaceArray:
+    """Fixed non-owning storage, with distinct row-major interface slots."""
+
+    type_name: InterfaceArrayType
+    items: tuple[InterfaceSlot, ...]
+
+    def _element(self, indices: tuple[int, ...]) -> InterfaceSlot:
+        if len(indices) != len(self.type_name.bounds):
+            raise IndexError("Wrong number of array indices")
+        offset = 0
+        for index, (low, high) in zip(indices, self.type_name.bounds, strict=True):
+            if type(index) is not int:
+                raise TypeError("Array indices must be integers, not BOOL")
+            if not low <= index <= high:
+                raise IndexError(f"Array index {index} outside [{low}, {high}]")
+            offset = offset * (high - low + 1) + index - low
+        return self.items[offset]
+
+    def inspect(self) -> tuple:
+        """Return a detached nested snapshot with the declared array shape."""
+        items = iter(self.items)
+        shape = self.type_name.shape
+
+        def reshape(dimension: int) -> tuple:
+            if dimension + 1 == len(shape):
+                return tuple(next(items).inspect() for _ in range(shape[dimension]))
+            return tuple(reshape(dimension + 1) for _ in range(shape[dimension]))
+
+        return reshape(0)
+
+
+@dataclass
 class ReferenceSlot:
     """A data binding whose target keeps its original storage lifetime."""
 
@@ -319,7 +352,7 @@ class Frame:
     """One invocation's locals or one persistent FB instance."""
 
     pou: Pou
-    slots: dict[str, Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None]
+    slots: dict[str, Cell | Frame | FBArray | InterfaceArray | InterfaceSlot | ReferenceSlot | None]
     lifetime: Lifetime = field(default_factory=Lifetime)
     initialized: bool = False
     prepared: bool = False
@@ -327,14 +360,15 @@ class Frame:
     standard: StandardBlockState | None = None
     method_owner: Frame | None = None
     method_instances: dict[
-        str, dict[str, Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None]
+        str,
+        dict[str, Cell | Frame | FBArray | InterfaceArray | InterfaceSlot | ReferenceSlot | None],
     ] = field(default_factory=dict)
 
     def inspect(self) -> dict[str, object]:
         def snapshot(slots):
             return {
                 name: value.inspect()
-                if isinstance(value, (Frame, FBArray, InterfaceSlot, ReferenceSlot))
+                if isinstance(value, (Frame, FBArray, InterfaceArray, InterfaceSlot, ReferenceSlot))
                 else value.value
                 if isinstance(value, Cell)
                 else None

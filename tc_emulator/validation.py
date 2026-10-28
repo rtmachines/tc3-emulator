@@ -64,6 +64,7 @@ from .types import (
     EnumType,
     EnumValue,
     FBArrayType,
+    InterfaceArrayType,
     InterfaceType,
     OpenArrayType,
     ReferenceType,
@@ -574,6 +575,17 @@ class _Validator:
             self.fail("Interface initializer must be literal integer 0", var.loc)
         return replace(var, type_name=InterfaceType(name), default=None)
 
+    def interface_array_variable(self, var: VarDecl) -> VarDecl:
+        kind = var.type_name
+        if kind.element_type.name not in self.pous.interfaces:
+            self.fail(f"Unknown interface {kind.element_type}", var.loc)
+        if var.constant or var.section not in {"VAR", "VAR_TEMP", "VAR_INST"}:
+            self.fail("Interface arrays require nonconstant owned local or global storage", var.loc)
+        if var.initial is not None:
+            self.fail("Interface arrays cannot have an initializer", var.loc)
+        self.initialization_arguments(var)
+        return replace(var, default=None)
+
     def reference_variable(self, var: VarDecl) -> VarDecl:
         if var.constant or var.section not in {"VAR", "VAR_INPUT", "VAR_TEMP", "VAR_INST"}:
             self.fail(
@@ -1037,6 +1049,14 @@ class _Validator:
             kind = prepare(var.type_name, scope)
             if isinstance(kind, ArrayType) and self.is_fb_type(kind.element_type):
                 kind = FBArrayType(kind.bounds, kind.element_type)
+            if (
+                isinstance(kind, ArrayType)
+                and isinstance(kind.element_type, str)
+                and kind.element_type in self.pous.interfaces
+            ):
+                kind = InterfaceArrayType(kind.bounds, InterfaceType(kind.element_type))
+            if isinstance(kind, InterfaceArrayType):
+                return self.interface_array_variable(replace(var, type_name=kind))
             if isinstance(kind, FBArrayType):
                 if var.constant:
                     self.fail("FB arrays cannot be constant", var.loc)
@@ -1599,7 +1619,7 @@ class _Validator:
                 kind = variable.type_name
                 if (
                     self.is_fb_type(kind)
-                    or isinstance(kind, (FBArrayType, InterfaceType))
+                    or isinstance(kind, (FBArrayType, InterfaceArrayType, InterfaceType))
                     or isinstance(kind, str)
                     and kind in self.pous.interfaces
                 ):
@@ -1651,6 +1671,8 @@ class _Validator:
                     child_instances, child_leaves = storage(definitions[child_name])
                     instances += multiplier * (1 + child_instances)
                     leaves += multiplier * child_leaves
+                elif isinstance(kind, InterfaceArrayType):
+                    leaves += kind.size
                 elif isinstance(kind, (InterfaceType, ReferenceType)) or (
                     isinstance(kind, str) and kind in self.pous.interfaces
                 ):
@@ -1831,7 +1853,9 @@ class _Validator:
             kind = var.type_name
             target_name = kind.element_type if isinstance(kind, FBArrayType) else kind
             target = self.pous.get(target_name) if isinstance(target_name, str) else None
-            if isinstance(kind, ReferenceType):
+            if isinstance(kind, InterfaceArrayType):
+                var = self.interface_array_variable(var)
+            elif isinstance(kind, ReferenceType):
                 var = self.reference_variable(var)
             elif isinstance(kind, InterfaceType) or (
                 isinstance(kind, str) and kind in self.pous.interfaces
@@ -2307,7 +2331,7 @@ class _Validator:
             return "BOOL"
         if isinstance(ref, Index):
             base = canonical_type(self.reference(ref.base, pou, writable=writable))
-            if not isinstance(base, (ArrayType, FBArrayType, OpenArrayType)):
+            if not isinstance(base, (ArrayType, FBArrayType, InterfaceArrayType, OpenArrayType)):
                 self.fail("Indexing requires an array", ref.loc)
             rank = base.rank if isinstance(base, OpenArrayType) else len(base.bounds)
             if len(ref.indices) != rank:
@@ -2768,7 +2792,7 @@ class _Validator:
         if not isinstance(array, (Reference, Index, Member)):
             self.fail(f"{name} requires an array storage location", array.loc)
         kind = canonical_type(self.reference(array, pou))
-        if not isinstance(kind, (ArrayType, FBArrayType, OpenArrayType)):
+        if not isinstance(kind, (ArrayType, FBArrayType, InterfaceArrayType, OpenArrayType)):
             self.fail(f"{name} requires an array storage location", array.loc)
         self.require(self.expression(dimension, pou), "INTEGER", dimension.loc)
         self.pous.bound_calls[id(call)] = array, dimension, name == "UPPER_BOUND"
