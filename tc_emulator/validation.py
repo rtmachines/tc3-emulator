@@ -112,6 +112,8 @@ class Registry(dict[str, Pou]):
         self.global_variables: dict[str, tuple[str, ...]] = {}
         self.builtin_calls: dict[int, TypeSpec] = {}
         self.method_calls: dict[int, tuple[LValue | None, str]] = {}
+        self.action_calls: dict[int, tuple[LValue | None, str, str]] = {}
+        self.effective_actions: dict[tuple[str, str], str] = {}
         self.properties: dict[tuple[str, str], Property] = {}
         self.property_reads: dict[int, tuple[LValue | None, str]] = {}
         self.property_writes: dict[int, tuple[LValue | None, str]] = {}
@@ -129,7 +131,7 @@ class Registry(dict[str, Pou]):
 
     @staticmethod
     def lexical_owner(pou: Pou) -> str | None:
-        return pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
+        return pou.name if pou.kind in {"FUNCTION_BLOCK", "PROGRAM"} else pou.owner
 
     def variables_for(self, pou: Pou) -> tuple[VarDecl, ...]:
         """Keep resolved declarations in their scopes; inherit only persistent fields."""
@@ -154,10 +156,19 @@ class Registry(dict[str, Pou]):
         qualified = self.effective_methods.get((owner, name), f"{owner}.{name}")
         return self.get(qualified)
 
+    def action_for(self, owner: str, name: str) -> Pou | None:
+        qualified = self.effective_actions.get((owner, name), f"{owner}.{name}")
+        target = self.get(qualified)
+        return target if target is not None and target.kind == "ACTION" else None
+
     def dispatch(self, owner: str, declaration: Pou, *, static: bool = False) -> Pou:
         """Resolve a checked member against its concrete receiver's effective table."""
         if static or declaration.access == "PRIVATE":
             return declaration
+        if declaration.kind == "ACTION":
+            target = self.action_for(owner, declaration.result_name)
+            assert target is not None
+            return target
         if declaration.kind == "METHOD":
             target = self.method_for(owner, declaration.result_name)
             assert target is not None
@@ -231,7 +242,7 @@ class _Validator:
             self.pous.interfaces[name] = interface
             self.pous.implementers[name] = set()
         for pou in self.program.pous:
-            if pou.kind in _MEMBER_KINDS:
+            if pou.kind in {*_MEMBER_KINDS, "ACTION"}:
                 self.fail("METHOD/accessor must be declared inside a FUNCTION_BLOCK", pou.loc)
             if (
                 pou.name in self.pous
@@ -272,6 +283,7 @@ class _Validator:
                     or method.extends is not None
                     or method.methods
                     or method.properties
+                    or method.actions
                 ):
                     self.fail("Invalid method declaration or owner", method.loc)
                 names.add(name)
@@ -307,12 +319,38 @@ class _Validator:
                         or accessor.extends is not None
                         or accessor.methods
                         or accessor.properties
+                        or accessor.actions
                     ):
                         self.fail("Invalid property accessor declaration", accessor.loc)
                     self.pous[accessor.name] = accessor
                     self.property_scopes[accessor.name] = declaration_scope
                     methods.append(accessor)
                 self.pous.properties[owner.name, prop.name] = prop
+            if owner.actions and owner.kind not in {"FUNCTION_BLOCK", "PROGRAM"}:
+                self.fail("Actions require FUNCTION_BLOCK or PROGRAM", owner.loc)
+            for action in owner.actions:
+                name = action.result_name
+                if name in names or name in {"FB_INIT", "FB_REINIT", "FB_EXIT"}:
+                    self.fail(f"Duplicate or reserved action name {name}", action.loc)
+                if (
+                    action.kind != "ACTION"
+                    or action.owner != owner.name
+                    or action.name != f"{owner.name}.{name}"
+                    or action.variables
+                    or action.return_type is not None
+                    or action.methods
+                    or action.properties
+                    or action.actions
+                    or action.extends is not None
+                    or action.implements
+                    or action.access != "PUBLIC"
+                    or action.property_name is not None
+                    or action.call_after_init
+                ):
+                    self.fail("Invalid action declaration or owner", action.loc)
+                names.add(name)
+                self.pous[action.name] = action
+                methods.append(action)
         self.program = replace(self.program, pous=(*self.program.pous, *methods))
         self.inherited_members()
         self.resolve_bounds()
@@ -384,6 +422,9 @@ class _Validator:
                     (prop.name, "property", self.pous.properties[owner, prop.name])
                     for prop in pou.properties
                 ]
+                declarations += [
+                    (action.result_name, "action", self.pous[action.name]) for action in pou.actions
+                ]
                 for member_name, kind, declaration in declarations:
                     previous = inherited.get(member_name)
                     if previous is not None:
@@ -396,7 +437,7 @@ class _Validator:
                             self.fail(
                                 f"Cannot override PRIVATE member {member_name}", declaration.loc
                             )
-                        if resolved:
+                        if resolved and kind != "action":
                             self.check_override(old, declaration, kind)
                     inherited[member_name] = kind, declaration
             for member_name, (kind, declaration) in inherited.items():
@@ -404,6 +445,8 @@ class _Validator:
                     self.pous.effective_methods[name, member_name] = declaration.name
                 elif kind == "property":
                     self.pous.properties[name, member_name] = declaration
+                elif kind == "action":
+                    self.pous.effective_actions[name, member_name] = declaration.name
 
     def check_override(self, base, derived, kind: str) -> None:
         matches = base.access == derived.access
@@ -621,9 +664,10 @@ class _Validator:
             )
         elif (
             target.owner
-            and target.kind in _MEMBER_KINDS
+            and target.kind in {*_MEMBER_KINDS, "ACTION"}
             and target.access != "PRIVATE"
             and not static
+            and self.pous[target.owner].kind == "FUNCTION_BLOCK"
         ):
             self.calls[caller.name].update(
                 self.pous.dispatch(owner, target).name
@@ -962,11 +1006,11 @@ class _Validator:
                     return owner, var, tuple(fields)
             if name == pou.result_name and pou.kind in _RESULT_KINDS:
                 return None
-            if pou.kind in _MEMBER_KINDS or pou.kind == "PROPERTY_DECL":
+            if pou.kind in {*_MEMBER_KINDS, "PROPERTY_DECL", "ACTION"}:
                 inherited = self.fb_variable(pou.owner, name)
                 if inherited is not None:
                     owner, var = inherited
-                    if var.section in {"VAR_TEMP", "VAR_IN_OUT"}:
+                    if pou.kind != "ACTION" and var.section in {"VAR_TEMP", "VAR_IN_OUT"}:
                         self.fail(
                             f"Owner {var.section} {name} is inaccessible from methods", ref.loc
                         )
@@ -1632,7 +1676,14 @@ class _Validator:
         original = pou
         if pou.implements and pou.kind != "FUNCTION_BLOCK":
             self.fail("IMPLEMENTS requires FUNCTION_BLOCK", pou.loc)
-        if pou.kind not in {"FUNCTION", "FUNCTION_BLOCK", "PROGRAM", "GVL", *_MEMBER_KINDS}:
+        if pou.kind not in {
+            "FUNCTION",
+            "FUNCTION_BLOCK",
+            "PROGRAM",
+            "GVL",
+            "ACTION",
+            *_MEMBER_KINDS,
+        }:
             self.fail(f"Unsupported POU kind {pou.kind}", pou.loc)
         if pou.kind == "FUNCTION" or (pou.kind in _MEMBER_KINDS and pou.return_type is not None):
             try:
@@ -2048,7 +2099,7 @@ class _Validator:
         else:
             return None
         if receiver is None:
-            owner = pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
+            owner = self.pous.lexical_owner(pou)
             if (
                 owner is None
                 or name in self.variables[pou.name]
@@ -2078,8 +2129,8 @@ class _Validator:
         self, ref: LValue, pou: Pou, *, writable: bool = False, allow_property: bool = False
     ) -> TypeSpec:
         if isinstance(ref, (This, Super)):
-            owner = pou.name if pou.kind == "FUNCTION_BLOCK" else pou.owner
-            if owner is None:
+            owner = self.pous.lexical_owner(pou)
+            if owner is None or self.pous[owner].kind != "FUNCTION_BLOCK":
                 self.fail(
                     f"{'SUPER' if isinstance(ref, Super) else 'THIS'} requires an owning FUNCTION_BLOCK",
                     ref.loc,
@@ -2368,11 +2419,44 @@ class _Validator:
         self.pous.method_calls[id(call)] = receiver, target.name
         return target
 
+    def action_target(self, call: Call, pou: Pou) -> Pou | None:
+        """Resolve statement-only members independently of method-local storage."""
+        receiver = None
+        if isinstance(call.target, Member):
+            receiver, name = call.target.base, call.target.name
+        elif isinstance(call.target, Reference):
+            name = call.target.parts[-1]
+            if len(call.target.parts) > 1:
+                receiver = Reference(call.target.parts[:-1], call.target.loc)
+        else:
+            return None
+        if receiver is None:
+            owner = self.pous.lexical_owner(pou)
+            if owner is None or name in self.variables[pou.name]:
+                return None
+        else:
+            owner = self.reference(receiver, pou)
+        target = self.pous.action_for(owner, name) if isinstance(owner, str) else None
+        if target is not None:
+            self.pous.action_calls[id(call)] = receiver, target.name, owner
+            if isinstance(receiver, Super):
+                self.pous.static_dispatch.add(id(call))
+        return target
+
     def call(self, call: Call, pou: Pou, *, as_expression: bool) -> TypeSpec:
         simple = isinstance(call.target, Reference) and len(call.target.parts) == 1
         name = call.target.parts[0] if simple else "instance"
-        target = self.method_target(call, pou)
-        if target is not None:
+        action = self.action_target(call, pou)
+        target = action or self.method_target(call, pou)
+        if action is not None:
+            if as_expression:
+                self.fail("Action cannot be used as an expression", call.loc)
+            if (
+                self.pous[self.pous.action_calls[id(call)][2]].kind == "PROGRAM"
+                and pou.kind == "FUNCTION"
+            ):
+                self.fail("FUNCTION cannot directly call PROGRAM actions", call.loc)
+        elif target is not None:
             if target.result_name == "FB_INIT":
                 self.fail("Explicit FB_init calls are unsupported", call.loc)
             if as_expression and target.return_type is None:
@@ -2417,19 +2501,22 @@ class _Validator:
         self.call_edge(pou, target, static=id(call) in self.pous.static_dispatch)
         if as_expression and target.kind not in {"FUNCTION", "METHOD"}:
             self.fail("FB and PROGRAM calls cannot be used as expressions", call.loc)
+        parameter_owner = (
+            self.pous[self.pous.action_calls[id(call)][2]] if action is not None else target
+        )
         parameters = {
             var.name: var
-            for var in self.pous.variables_for(target)
+            for var in self.pous.variables_for(parameter_owner)
             if var.section in {"VAR_INPUT", "VAR_OUTPUT", "VAR_IN_OUT"}
         }
         positional = [arg.name is None for arg in call.arguments]
         if any(positional) and not all(positional):
             self.fail("Cannot mix positional and named arguments", call.loc)
-        if any(positional) and target.kind in {"FUNCTION_BLOCK", "PROGRAM"}:
+        if any(positional) and target.kind in {"FUNCTION_BLOCK", "PROGRAM", "ACTION"}:
             self.fail("FB and PROGRAM calls require named arguments", call.loc)
         ordered = [
             var
-            for var in self.pous.variables_for(target)
+            for var in self.pous.variables_for(parameter_owner)
             if var.section in {"VAR_INPUT", "VAR_IN_OUT"}
         ]
         bound: set[str] = set()
@@ -2475,8 +2562,12 @@ class _Validator:
                 self.interface_source(arg.value, parameter.type_name, pou)
             else:
                 self.require(self.expression(arg.value, pou), parameter.type_name, arg.loc)
+        receiver = self.pous.action_calls[id(call)][0] if action is not None else None
+        local_action = action is not None and (
+            receiver is None or isinstance(receiver, (This, Super))
+        )
         for parameter in parameters.values():
-            required = parameter.section == "VAR_IN_OUT" or (
+            required = (parameter.section == "VAR_IN_OUT" and not local_action) or (
                 parameter.section == "VAR_INPUT"
                 and (
                     target.kind == "FUNCTION"

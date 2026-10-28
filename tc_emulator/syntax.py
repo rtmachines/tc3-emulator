@@ -289,6 +289,7 @@ class Pou:
     implements: tuple[str, ...] = ()
     extends: str | None = None
     call_after_init: bool = False
+    actions: tuple[Pou, ...] = ()
 
     @property
     def result_name(self) -> str:

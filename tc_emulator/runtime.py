@@ -273,6 +273,28 @@ class Runtime:
             ),
         )
 
+    def call_action(
+        self, program_name: str, action_name: str, /, **inputs: Value | Cell | FBHandle
+    ) -> None:
+        """Execute one PROGRAM action, retaining its persistent owner state."""
+        pou = self._pou(program_name, "PROGRAM")
+        self._call_action(self._engine.program_frames[pou.name], action_name, inputs)
+
+    def _call_action(
+        self, owner: Frame, name: str, inputs: dict[str, Value | Cell | FBHandle]
+    ) -> None:
+        self._ensure_healthy()
+        action = self._registry.action_for(owner.pou.name, _name(name))
+        if action is None:
+            raise ArgumentError(f"Unknown action {name}", owner.pou.loc)
+        arguments = self._arguments(owner.pou, inputs)
+        context = Context(self._max_steps, self._max_call_depth, now_ms=self._now_ms)
+        try:
+            self._engine.invoke_action(owner, action, arguments, context, action.loc)
+        except ExecutionError:
+            self._faulted = True
+            raise
+
     def _arguments(
         self,
         pou: st.Pou,
@@ -477,6 +499,10 @@ class FBHandle:
         """Execute the body once, retaining omitted inputs and FB state."""
         arguments = self._runtime._arguments(self._frame.pou, inputs)
         self._runtime._execute(self._frame, arguments)
+
+    def call_action(self, name: str, /, **inputs: Value | Cell | FBHandle) -> None:
+        """Execute an inherited or declared action against this instance."""
+        self._runtime._call_action(self._frame, name, inputs)
 
     def fb(self, variable_name: str, *indices: int) -> FBHandle:
         """Select a persistent nested instance or fixed-array element."""

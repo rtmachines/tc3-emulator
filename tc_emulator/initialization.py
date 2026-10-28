@@ -266,7 +266,10 @@ def initialization_edges(v: _Validator) -> None:
                 )
             }
     for pou in v.pous.values():
-        for var in v.pous.variables_for(pou):
+        declaration = v.pous[pou.owner] if pou.kind == "ACTION" else pou
+        for var in v.pous.variables_for(declaration):
+            if pou.kind == "ACTION" and var.section != "VAR_TEMP":
+                continue
             kind = var.type_name
             target = kind.element_type if isinstance(kind, FBArrayType) else kind
             if not isinstance(target, str) or f"$INIT:{target}" not in v.calls:
@@ -282,9 +285,9 @@ def initialization_edges(v: _Validator) -> None:
             else:
                 callers = [pou.name]
             declaration_owner = (
-                v.fb_variable(pou.name, var.name)[0].name
-                if pou.kind == "FUNCTION_BLOCK"
-                else pou.name
+                v.fb_variable(declaration.name, var.name)[0].name
+                if declaration.kind == "FUNCTION_BLOCK"
+                else declaration.name
             )
             for caller in callers:
                 v.calls[caller].add(f"$INIT:{target}")

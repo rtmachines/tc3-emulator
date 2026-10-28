@@ -39,7 +39,7 @@ def _xml_program(text: str, source: str) -> Program:
         sum(child.tag == "Declaration" for child in pou) != 1
         or sum(child.tag == "Implementation" for child in pou) != 1
         or any(
-            child.tag not in {"Declaration", "Implementation", "Method", "Property"}
+            child.tag not in {"Declaration", "Implementation", "Method", "Property", "Action"}
             for child in pou
         )
     ):
@@ -111,10 +111,11 @@ def _xml_program(text: str, source: str) -> Program:
                         not parsed.variables
                         and not parsed.body
                         and not parsed.properties
+                        and not parsed.actions
                         and len(parsed.methods) == 1
                     ):
                         return parsed.methods[0]
-                elif not parsed.methods and not parsed.properties:
+                elif not parsed.methods and not parsed.properties and not parsed.actions:
                     return parsed
             raise ParseError("Unexpected declarations outside the declared POU or method", loc)
 
@@ -194,6 +195,7 @@ def _xml_program(text: str, source: str) -> Program:
                     and not parsed.variables
                     and not parsed.body
                     and not parsed.methods
+                    and not parsed.actions
                     and len(parsed.properties) == 1
                 ):
                     return parsed.properties[0]
@@ -267,7 +269,52 @@ def _xml_program(text: str, source: str) -> Program:
     parsed_owner = sections(pou, source)
     methods = []
     properties = []
+    actions = []
     for method in pou:
+        if method.tag == "Action":
+            check(method, "Action", {"Name", "Id"})
+            if parsed_owner.kind not in {"FUNCTION_BLOCK", "PROGRAM"}:
+                raise ParseError("Actions require a FUNCTION_BLOCK or PROGRAM owner", location)
+            name = method.get("Name", "")
+            section_source = f"{source}:Action:{name}:Implementation"
+            tokens = _lex(name, section_source, None)
+            if len(tokens) != 2 or tokens[0].kind != "ID" or tokens[0].text != name.upper():
+                raise ParseError("Action Name metadata must be a valid ST identifier", location)
+            if len(method) != 1:
+                raise ParseError("Action requires exactly one Implementation", location)
+            implementation = method[0]
+            check(implementation, "Implementation", set())
+            if len(implementation) != 1:
+                raise ParseError("Action requires exactly one ST implementation", location)
+            st = implementation[0]
+            check(st, "ST", set())
+            if len(st):
+                raise ParseError("Action ST implementation must contain text only", location)
+            body = st.text or ""
+            prefix = f"{parsed_owner.kind} {parsed_owner.name}\nACTION {name}:\n"
+            locations = {
+                line + 2: Location(section_source, line, 1)
+                for line in range(1, len(body.split("\n")) + 4)
+            }
+            parsed = parse(
+                prefix + body + f"\nEND_ACTION\nEND_{parsed_owner.kind}",
+                section_source,
+                locations=locations,
+            )
+            if (
+                len(parsed.pous) != 1
+                or parsed.types
+                or parsed.gvls
+                or parsed.interfaces
+                or parsed.pous[0].variables
+                or parsed.pous[0].body
+                or parsed.pous[0].methods
+                or parsed.pous[0].properties
+                or len(parsed.pous[0].actions) != 1
+            ):
+                raise ParseError("Unexpected declarations outside the action", location)
+            actions.append(parsed.pous[0].actions[0])
+            continue
         if method.tag == "Property":
             if parsed_owner.kind != "FUNCTION_BLOCK":
                 raise ParseError("Properties require a FUNCTION_BLOCK owner", location)
@@ -283,7 +330,16 @@ def _xml_program(text: str, source: str) -> Program:
         methods.append(
             sections(method, f"{source}:Method:{method.get('Name', '')}", parsed_owner.name)
         )
-    return Program((replace(parsed_owner, methods=tuple(methods), properties=tuple(properties)),))
+    return Program(
+        (
+            replace(
+                parsed_owner,
+                methods=tuple(methods),
+                properties=tuple(properties),
+                actions=tuple(actions),
+            ),
+        )
+    )
 
 
 def _xml_interface(text: str, source: str) -> Program:

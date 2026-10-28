@@ -48,11 +48,19 @@ class Context:
     max_depth: int
     stack: list[str] = field(default_factory=list)
     now_ms: int = 0
+    activations: list[_OwnerActivation] = field(default_factory=list)
 
     def tick(self, loc: st.Location) -> None:
         self.remaining -= 1
         if self.remaining < 0:
             raise ExecutionError("Execution step budget exhausted", loc, tuple(self.stack))
+
+
+@dataclass
+class _OwnerActivation:
+    owner: Frame
+    lifetime: Lifetime = field(default_factory=Lifetime)
+    banks: dict[str, Frame] = field(default_factory=dict)
 
 
 class _Return(Exception):
@@ -351,7 +359,7 @@ class Engine:
                 base = (
                     frame
                     if isinstance(ref.base, st.This)
-                    and frame.pou.kind == "FUNCTION_BLOCK"
+                    and frame.pou.kind in {"FUNCTION_BLOCK", "PROGRAM", "ACTION"}
                     and ref.name in frame.slots
                     else self.resolve(ref.base, frame, ctx)
                 )
@@ -475,7 +483,12 @@ class Engine:
         if len(ctx.stack) >= ctx.max_depth:
             raise ExecutionError("Call depth limit exceeded", loc, tuple(ctx.stack))
         persistent = None
-        if frame.pou.kind == "FUNCTION_BLOCK" and frame.timer is None and frame.standard is None:
+        activation = None
+        if (
+            frame.pou.kind in {"FUNCTION_BLOCK", "PROGRAM"}
+            and frame.timer is None
+            and frame.standard is None
+        ):
             # Keep only temporaries in the activation. Persistent references use
             # lexical owner lookup against the live root, including IN_OUT aliases
             # rebound while this body is suspended inside SUPER.
@@ -487,14 +500,10 @@ class Engine:
                 lifetime=persistent.lifetime,
                 method_owner=persistent,
             )
+            activation = _OwnerActivation(persistent)
+            ctx.activations.append(activation)
         ctx.stack.append(frame.pou.name)
-        temporary_lifetime = Lifetime()
         try:
-            for decl in self.registry.variables_for(frame.pou):
-                if decl.section == "VAR_TEMP":
-                    frame.slots[decl.name] = self._variable(decl, temporary_lifetime)
-                    if persistent is not None and persistent.pou.name == frame.pou.name:
-                        persistent.slots[decl.name] = frame.slots[decl.name]
             input_slots = persistent.slots if persistent is not None else frame.slots
             for name, value in inputs.items():
                 if isinstance(input_slots[name], ReferenceSlot):
@@ -509,23 +518,12 @@ class Engine:
                     if not isinstance(target, Cell):
                         raise ExecutionError(f"Invalid input {name}", loc)
                     target._write(value, loc)
-            sections = (
-                {"VAR_TEMP"}
-                if frame.pou.kind in {"FUNCTION_BLOCK", "PROGRAM"}
-                else {"VAR", "VAR_INPUT"}
-            )
-            self.initialize_references(frame, sections, ctx, supplied=inputs)
-            # Invocation inputs and reference declarations are ready for local children.
-            for decl in self.registry.variables_for(frame.pou):
-                if decl.section == "VAR_TEMP":
-                    for child in self.storage_frames(frame.slots[decl.name]):
-                        self.prepare_owned(child, ctx)
-            if persistent is None:
+            if activation is not None:
+                frame = self.temporary_bank(activation, frame.pou, ctx)
+            else:
+                self.initialize_references(frame, {"VAR", "VAR_INPUT"}, ctx, supplied=inputs)
                 self.prepare_owned(frame, ctx, supplied=inputs)
                 self.initialize_owned(frame, ctx)
-            for decl in self.registry.variables_for(frame.pou):
-                if decl.section == "VAR_TEMP":
-                    self.initialize_declaration(decl, frame.slots[decl.name], frame, ctx)
             try:
                 if frame.timer is not None:
                     ctx.tick(loc)
@@ -552,10 +550,92 @@ class Engine:
                 "Interpreter nesting limit exceeded", loc, tuple(ctx.stack)
             ) from error
         finally:
-            temporary_lifetime.alive = False
+            if activation is not None:
+                activation.lifetime.alive = False
+                ctx.activations.pop()
             if frame.pou.kind in {"FUNCTION", "METHOD", "PROPERTY_GET", "PROPERTY_SET"}:
                 frame.lifetime.alive = False
             ctx.stack.pop()
+
+    def temporary_bank(
+        self, activation: _OwnerActivation, declaration: st.Pou, ctx: Context
+    ) -> Frame:
+        """Prepare one lexical owner's temporaries once in this activation."""
+        if declaration.name in activation.banks:
+            return activation.banks[declaration.name]
+        frame = Frame(
+            declaration, {}, lifetime=activation.owner.lifetime, method_owner=activation.owner
+        )
+        activation.banks[declaration.name] = frame
+        temporaries = [
+            v for v in self.registry.variables_for(declaration) if v.section == "VAR_TEMP"
+        ]
+        for decl in temporaries:
+            frame.slots[decl.name] = self._variable(decl, activation.lifetime)
+            if declaration.name == activation.owner.pou.name:
+                # Retain the existing inspection snapshot without resolving a
+                # base declaration through its concrete receiver's temp bank.
+                activation.owner.slots[decl.name] = frame.slots[decl.name]
+        self.initialize_references(frame, {"VAR_TEMP"}, ctx)
+        for decl in temporaries:
+            for child in self.storage_frames(frame.slots[decl.name]):
+                self.prepare_owned(child, ctx)
+        for decl in temporaries:
+            self.initialize_declaration(decl, frame.slots[decl.name], frame, ctx)
+        return frame
+
+    def invoke_action(
+        self,
+        owner: Frame,
+        action: st.Pou,
+        inputs: dict[str, Value | Cell | Frame | None],
+        ctx: Context,
+        loc: st.Location,
+        *,
+        static: bool = False,
+    ) -> None:
+        """Execute an action without calling its owner's body or lifecycle."""
+        action = self.registry.dispatch(owner.pou.name, action, static=static)
+        if len(ctx.stack) >= ctx.max_depth:
+            raise ExecutionError("Call depth limit exceeded", loc, tuple(ctx.stack))
+        activation = next((a for a in reversed(ctx.activations) if a.owner is owner), None)
+        standalone = activation is None
+        if standalone:
+            activation = _OwnerActivation(owner)
+            ctx.activations.append(activation)
+        ctx.stack.append(action.name)
+        try:
+            for name, value in inputs.items():
+                slot = owner.slots[name]
+                if isinstance(slot, (ReferenceSlot, InterfaceSlot)):
+                    slot.bind(value, loc)
+                elif isinstance(value, Cell):
+                    if value.read_only:
+                        raise ExecutionError(
+                            "Cannot bind a read-only constant cell as VAR_IN_OUT", loc
+                        )
+                    owner.slots[name] = value
+                else:
+                    slot._write(value, loc)
+            bank = self.temporary_bank(activation, self.registry[action.owner], ctx)
+            frame = Frame(action, bank.slots, lifetime=owner.lifetime, method_owner=owner)
+            try:
+                self.statements(action.body, frame, ctx)
+            except _Return:
+                pass
+        except ExecutionError as error:
+            if not error.stack:
+                raise ExecutionError(error.message, error.loc or loc, tuple(ctx.stack)) from error
+            raise
+        except RecursionError as error:
+            raise ExecutionError(
+                "Interpreter nesting limit exceeded", loc, tuple(ctx.stack)
+            ) from error
+        finally:
+            ctx.stack.pop()
+            if standalone:
+                activation.lifetime.alive = False
+                ctx.activations.pop()
 
     def _call(self, call: st.Call, caller: Frame, ctx: Context) -> Value | None:
         if id(call) in self.registry.valid_reference_calls:
@@ -580,9 +660,17 @@ class Engine:
         if id(call) in self.registry.builtin_calls:
             return self._standard_call(call, caller, ctx)
         root = call.target.parts[0] if isinstance(call.target, st.Reference) else None
+        action = self.registry.action_calls.get(id(call))
+        action_owner = None
         method = self.registry.method_calls.get(id(call))
         method_owner = None
-        if method is not None:
+        if action is not None:
+            receiver, qualified_name, parameter_owner = action
+            action_owner = self.property_owner(receiver, caller, ctx)
+            declaration = self.registry[qualified_name]
+            pou = self.registry[parameter_owner]
+            target = action_owner
+        elif method is not None:
             receiver, qualified_name = method
             method_owner = (
                 caller.method_owner or caller
@@ -653,13 +741,23 @@ class Engine:
                 raise ExecutionError(
                     "Instance nesting limit exceeded", call.loc, (*ctx.stack, pou.name)
                 ) from error
-        self.invoke(
-            target,
-            inputs,
-            ctx,
-            call.loc,
-            body=pou if id(call) in self.registry.super_calls else None,
-        )
+        if action_owner is not None:
+            self.invoke_action(
+                action_owner,
+                declaration,
+                inputs,
+                ctx,
+                call.loc,
+                static=id(call) in self.registry.static_dispatch,
+            )
+        else:
+            self.invoke(
+                target,
+                inputs,
+                ctx,
+                call.loc,
+                body=pou if id(call) in self.registry.super_calls else None,
+            )
         for name, cell in outputs:
             output = target.slots[name]
             cell._write(output.value, call.loc)

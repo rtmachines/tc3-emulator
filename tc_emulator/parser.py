@@ -69,7 +69,7 @@ _RESERVED = _SECTIONS | set(
     """FUNCTION FUNCTION_BLOCK END_FUNCTION END_FUNCTION_BLOCK
 END_VAR IF THEN ELSIF ELSE END_IF CASE OF END_CASE FOR TO BY DO END_FOR WHILE
 END_WHILE RETURN EXIT TRUE FALSE AND OR XOR NOT MOD PROGRAM END_PROGRAM
-RETAIN PERSISTENT CONSTANT METHOD END_METHOD ACTION PROPERTY EXTENDS IMPLEMENTS INTERFACE
+RETAIN PERSISTENT CONSTANT METHOD END_METHOD ACTION END_ACTION PROPERTY EXTENDS IMPLEMENTS INTERFACE
 END_INTERFACE END_GET END_SET END_PROPERTY THIS SUPER REPEAT UNTIL END_REPEAT ARRAY STRUCT END_STRUCT TYPE END_TYPE AT POINTER REFERENCE
 AND_THEN OR_ELSE VAR_GLOBAL VAR_EXTERNAL""".split()
 )
@@ -471,19 +471,17 @@ class _Parser:
             variables.extend(self.variable_declarations(section, "END_VAR", constant=constant))
             self.expect("END_VAR")
         ending = "END_" + kind.kind
-        body = self.block(
-            {ending, "METHOD", "PROPERTY", "CALL_AFTER_INIT"}
-            if kind.kind == "FUNCTION_BLOCK"
-            else {ending}
-        )
+        members = {"ACTION"} if kind.kind in {"FUNCTION_BLOCK", "PROGRAM"} else set()
+        if kind.kind == "FUNCTION_BLOCK":
+            members.update({"METHOD", "PROPERTY", "CALL_AFTER_INIT"})
+        body = self.block({ending, *members})
         methods = []
         properties = []
-        while kind.kind == "FUNCTION_BLOCK" and self.token.kind in {
-            "METHOD",
-            "PROPERTY",
-            "CALL_AFTER_INIT",
-        }:
-            if self.token.kind in {"METHOD", "CALL_AFTER_INIT"}:
+        actions = []
+        while self.token.kind in members:
+            if self.token.kind == "ACTION":
+                actions.append(self.action(name))
+            elif self.token.kind in {"METHOD", "CALL_AFTER_INIT"}:
                 methods.append(self.method(name))
             else:
                 properties.append(self.property_declaration(name))
@@ -500,7 +498,16 @@ class _Parser:
             implements=tuple(implements),
             extends=extends,
             call_after_init=attribute is not None,
+            actions=tuple(actions),
         )
+
+    def action(self, owner: str) -> Pou:
+        start = self.expect("ACTION")
+        name = self.expect("ID").text
+        self.expect(":")
+        body = self.block({"END_ACTION"})
+        self.expect("END_ACTION")
+        return Pou("ACTION", f"{owner}.{name}", None, (), body, start.loc, owner=owner)
 
     def method(self, owner: str, *, prototype: bool = False) -> Pou:
         attribute = self.accept("CALL_AFTER_INIT")
