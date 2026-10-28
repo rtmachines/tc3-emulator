@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="MAIN_Line">
+    <Declaration><![CDATA[PROGRAM MAIN_Line
+VAR
+    (* Constructors run base to derived; post-init setters precede AfterInit.
+       Expected initTrace for each element before the first scan: 12345.
+       This native-format fixture has not been executed on TwinCAT. *)
+    conveyors : ARRAY[1..3] OF FB_Conveyor[
+        (conveyorId := 1, sharedConfig := GVL_Line.config, defaultDelay := T#1s),
+        (conveyorId := 2, sharedConfig := GVL_Line.config, defaultDelay := T#1s),
+        (conveyorId := 3, sharedConfig := GVL_Line.config, defaultDelay := T#1s)]
+        := [(StartDelay := T#100ms, SpeedFactor := 1.0),
+            (StartDelay := T#250ms, SpeedFactor := 1.0),
+            (StartDelay := T#500ms, SpeedFactor := 1.0)];
+    i : DINT;
+END_VAR
+]]></Declaration>
+    <Implementation><ST><![CDATA[FOR i := LOWER_BOUND(conveyors, 1) TO UPPER_BOUND(conveyors, 1) DO
+    conveyors[i]();
+    GVL_Line.running[i] := conveyors[i].running;
+    GVL_Line.actualSpeed[i] := conveyors[i].actualSpeed;
+END_FOR;
+]]></ST></Implementation>
+  </POU>
+</TcPlcObject>

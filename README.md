@@ -4,7 +4,7 @@ Interpreter ograniczonego podzbioru Structured Text napisany w Pythonie.
 Uruchamia funkcje, bloki funkcyjne i programy PLC z GVL bez instalacji TwinCAT, również na Linuxie.
 Przeznaczony do szybkich testów logiki w Pythonie/pytest.
 
-**Wersja 0.14 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
+**Wersja 0.15 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
 obsługiwane konstrukcje; pozostałe są odrzucane. Przejście testu nie potwierdza
 pełnej zgodności z runtime Beckhoff. Nie wykonuje binariów ani bibliotek TwinCAT.
 
@@ -117,6 +117,8 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 - Właściwości FB PROPERTY GET/SET, THIS^ oraz VAR_INST w metodach FB.
 - INTERFACE/IMPLEMENTS, zmienne interfejsowe i dynamiczne wywołania metod/właściwości.
 - Pojedyncze dziedziczenie FB przez EXTENDS, nadpisania metod/właściwości i SUPER^.
+- Inicjalizacja FB przez FB_init, parametry deklaracji, przypisania wejść/właściwości
+  po FB_init i hooki call_after_init, także dla dziedziczenia i tablic FB.
 - Nazwy bez rozróżniania wielkości liter; komentarze `//` i zagnieżdżone `(* ... *)`.
 - Import deklaracji i implementacji ST z `.TcPOU`, w tym metod i właściwości FB; bez akcji.
 - Import pojedynczej deklaracji typu z prostego `.TcDUT` i listy globalnej z `.TcGVL`.
@@ -124,7 +126,8 @@ obsługują wywołania pozycyjne lub nazwane. Nie można mieszać obu form.
 
 Poza zakresem pozostają LTIME, DATE/TOD/DT, WSTRING i tekst UTF-8,
 RETAIN/PERSISTENT, VAR_EXTERNAL, metody i właściwości PROGRAM,
-dziedziczenie interfejsów, atrybuty poza GVL qualified_only, biblioteki zewnętrzne,
+dziedziczenie interfejsów, atrybuty poza GVL qualified_only i FB/metod call_after_init,
+FB_exit/FB_reinit, online change, biblioteki zewnętrzne,
 ogólne wskaźniki, referencje do FB/interfejsów i referencje zagnieżdżone.
 Obsługiwane mechanizmy aliasowania to VAR_IN_OUT, zmienne interfejsowe,
 REFERENCE TO danych oraz ograniczony dostęp THIS^/SUPER^. LWORD/LINT/ULINT, pola typu BIT oraz częściowy dostęp `.%B`/`.%W`
@@ -963,9 +966,9 @@ assert controller.call_method("IsRunning").value is False
 Testy `examples/test_conveyor_methods.py` pokazują także pełne skany PLC,
 pierwszeństwo interlocków, niezależne instancje i reset licznika produktów.
 
-Metody pozostają ograniczone do FB, bez specjalnych
-`FB_init`/`FB_reinit`/`FB_exit`. Kolejne wersje dodają `THIS^`, `VAR_INST`, właściwości,
-interfejsy i dziedziczenie — opis poniżej.
+Metody pozostają ograniczone do FB. W v0.15 specjalne `FB_init` wykonuje się
+podczas tworzenia instancji; `FB_reinit`/`FB_exit` pozostają poza zakresem.
+Kolejne sekcje opisują `THIS^`, `VAR_INST`, właściwości, interfejsy i dziedziczenie.
 Metoda nie może odwoływać się do `VAR_TEMP` ani `VAR_IN_OUT` właściciela;
 własne `VAR_IN_OUT` metody jest obsługiwane. Ograniczenie dotyczące właściciela
 zapobiega używaniu zapamiętanego powiązania z wcześniejszego wywołania FB.
@@ -1394,7 +1397,7 @@ Przykłady z poprzednich wersji pozostają dostępne.
 
 Poza zakresem pozostają `ABSTRACT`, `FINAL`, `INTERNAL`, dziedziczenie
 wbudowanych FB i interfejsów, ogólne operatory wskaźnikowe,
-`FB_init`/`FB_exit`/`FB_reinit`, akcje, online change i semantyka trwałości PLC.
+`FB_exit`/`FB_reinit`, akcje, online change i semantyka trwałości PLC.
 Nieobsługiwane deklaracje są odrzucane. Dziedziczenie nie dodaje kopiowania FB
 przez wartość ani przekazywania FB przez `VAR_IN_OUT`.
 
@@ -1537,6 +1540,191 @@ assert second.output("alarm") == ""
 ```
 
 Automatyczne testy scenariusza: `python -m pytest examples/test_conveyor_references.py`.
+
+## Inicjalizacja bloków funkcyjnych (v0.15)
+
+Nowa instancja FB wykonuje inicjalizację przed pierwszym zwykłym wywołaniem.
+Dotyczy to także FB w PROGRAM, GVL, zagnieżdżonych FB i elementów tablic.
+`Runtime.from_files` oraz `from_source` zwracają Runtime z przygotowanymi
+instancjami trwałymi, a `instantiate` zwraca gotową nową instancję.
+Kolejne skany i wywołania nie powtarzają tej inicjalizacji.
+
+`METHOD PUBLIC FB_init : BOOL` ma dwa obowiązkowe pierwsze wejścia
+`bInitRetains : BOOL` i `bInCopyCode : BOOL`, bez wartości domyślnych.
+Runtime dostarcza odpowiednio `TRUE` i `FALSE`. Dalsze parametry to `VAR_INPUT`;
+mogą mieć zwykłe wartości domyślne oraz typy wartościowe, referencyjne lub
+interfejsowe zgodne z dotychczasowym zakresem. Wynik `BOOL`, także `FALSE`,
+jest ignorowany. `VAR_OUTPUT` i `VAR_IN_OUT` tego konstruktora są odrzucane.
+Nie można jawnie wywołać `FB_init` ze ST ani Pythona, także przez `SUPER^`.
+
+Parametry deklaracji i przypisania po inicjalizacji są osobnymi etapami:
+
+```iecst
+motor : FB_Motor(axisId := 1) := (enable := TRUE, SpeedSetpoint := 0.5);
+motors : ARRAY[1..2] OF FB_Motor[(axisId := 1), (axisId := 2)]
+    := [(enable := TRUE), (enable := FALSE)];
+```
+
+`FB_Motor` w tym zapisie oznacza własny FB z odpowiednim `FB_init`, wejściem
+`enable` i zapisywalną właściwością `SpeedSetpoint`. Argumenty konstruktora
+mogą być nazwane albo pozycyjne; nie można mieszać form, powtarzać nazw ani
+podawać flag systemowych. Dla tablic argumenty wspólne zapisuje się za typem,
+np. `ARRAY[1..2] OF FB_Motor(axisId := 1)`, a osobne w płaskiej liście jak wyżej.
+Jawna lista parametrów musi zawierać dokładnie jeden zestaw na każdy element,
+w kolejności deklaracji; w tablicach wielowymiarowych ostatni indeks zmienia
+się najszybciej. Wspólne argumenty nie współdzielą pamięci samych instancji.
+
+Po konstruktorach wykonywane są przypisania do istniejących publicznych
+`VAR_INPUT` oraz właściwości z publicznym setterem. Referencje i interfejsy
+wiążą tożsamość celu. Wpisy wykonują się w kolejności źródła; prawa strona
+każdego wpisu jest obliczana bezpośrednio przed przypisaniem. Obsługiwane są
+wyrażenia stałe i bezpośrednie wartości lub referencje do pamięci w leksykalnym
+zakresie deklaracji. Wywołania ze skutkami ubocznymi i odczyty właściwości
+w wyrażeniach deklaracji są odrzucane. Nie można inicjalizować w ten sposób
+prywatnych pól ani wyjść. Wartości i wiązania trwałej instancji nie mogą
+przechwytywać danych lokalnych wywołania ani `VAR_IN_OUT`.
+
+Pełna pamięć PROGRAM/GVL jest alokowana przed rozpoczęciem metod startowych.
+Przed nimi wiązane są deklarowane referencje w całym trwałym drzewie pamięci;
+pozwala to konstruktorowi korzystać z referencji do danych zadeklarowanych
+później. Dzieci inicjalizują się przed właścicielem, w kolejności deklaracji.
+Dla jednej instancji kolejność jest następująca:
+
+1. Przygotowanie pamięci i wiązań referencyjnych.
+2. Własne implementacje `FB_init` kolejnych klas, od najstarszej bazy do potomka.
+3. Przypisania wejść i właściwości z deklaracji instancji.
+4. Efektywne metody oznaczone `call_after_init`, po jednej na nazwę.
+
+Potomny `FB_init` zachowuje cały prefiks parametrów bazy: nazwy, kierunki,
+rozstrzygnięte typy i wartości domyślne; może dodać dalsze wejścia. Jeżeli go
+nie deklaruje, odziedziczona inicjalizacja nadal się wykonuje. Łańcuch
+konstruktorów jest automatyczny. Zwykłe wywołania metod z ich ciał nadal
+korzystają z dynamicznego wyboru implementacji.
+
+`{attribute 'call_after_init'}` zapisuje się bezpośrednio przed deklaracją
+`FUNCTION_BLOCK` oraz przed wybraną `METHOD`. Oznaczona metoda wymaga oznaczonego
+FB; potomkowie oznaczonego FB również wymagają tego atrybutu. Hook nie ma
+parametrów formalnych, ale może mieć lokalne `VAR`/`VAR_INST` i wynik, który
+jest ignorowany. Nadpisanie zachowuje atrybut i zastępuje hook bazy. Jeżeli
+ma wykonać także kod bazy, wywołuje jawnie `SUPER^.NazwaHooka()`.
+Różne nazwy hooków wykonują się według deklaracji od bazy do potomka — to jawna
+reguła profilu emulatora. Atrybut nie jest dozwolony na metodach cyklu życia.
+
+Lokalne instancje funkcji/metody inicjalizują się raz na aktywację, po związaniu
+jej wejść; `VAR_TEMP` przy każdym wywołaniu ciała, a `VAR_INST` raz na właściciela.
+Inicjalizacja korzysta ze wspólnego budżetu kroków, głębokości i zegara danego
+wywołania; start całego Runtime ma jeden wspólny budżet. Błąd ST w konstruktorze,
+setterze lub hooku daje `ExecutionError` ze źródłem; istniejący Runtime zostaje
+zablokowany zgodnie z dotychczasową obsługą błędów. Nie ma wycofywania zmian.
+
+### Trzy przenośniki gotowe przed pierwszym skanem
+
+`examples/conveyor_initialization/` jest samodzielnym zestawem `.TcPOU`,
+`.TcGVL` i `.TcDUT`. `FB_ConveyorBase` wiąże wspólną konfigurację i zapisuje ID;
+`FB_Conveyor` dodaje własny `FB_init`. Deklaracja tablicy przekazuje osobne ID
+1/2/3, a po konstruktorach ustawia `StartDelay` na 100/250/500 ms i właściwość
+`SpeedFactor` na 1.0. Nadpisany hook wywołuje bazę przez `SUPER^.AfterInit()`.
+PROGRAM tylko wywołuje przenośniki i publikuje wyjścia — nie wymaga flagi
+pierwszego skanu ani ręcznego wiązania konfiguracji.
+
+Przed skanem każda instancja ma `ready = TRUE`, `baseInitCount = 1`,
+`derivedInitCount = 1`, `afterInitCount = 1` i `initTrace = 12345`.
+Cyfry śladu oznaczają kolejno konstruktor bazy, konstruktor potomka,
+setter, hook bazy i hook potomka. Jest to instrumentacja tego przykładu,
+nie publiczny mechanizm zdarzeń cyklu życia. Ponowne ręczne wywołanie settera
+również dopisze cyfrę do śladu.
+
+Uruchom z katalogu projektu po instalacji pakietu:
+
+```python
+from pathlib import Path
+from tc_emulator import Runtime
+
+rt = Runtime.from_files(sorted(Path("examples/conveyor_initialization").glob("*.Tc*")))
+second = rt.program_fb("MAIN_Line", "conveyors", 2)
+assert second.output("ready") is True
+assert second.output("initTrace") == 12345
+assert second.output("id") == 2
+assert second.inspect()["STARTDELAY"] == 250
+
+rt.scan("MAIN_Line")
+running = rt.global_cell("GVL_Line", "running")
+assert running.value == (False, False, False)
+rt.advance_time(100)
+rt.scan("MAIN_Line")
+assert running.value == (True, False, False)
+rt.advance_time(150)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, False)
+rt.advance_time(250)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, True)
+
+config = rt.global_cell("GVL_Line", "config")
+config.field("speed").value = 0.4
+rt.scan("MAIN_Line")
+assert rt.global_cell("GVL_Line", "actualSpeed").value == (0.4, 0.4, 0.4)
+config.field("enabled").value = False
+rt.scan("MAIN_Line")
+assert running.value == (False, False, False)
+config.field("enabled").value = True
+rt.scan("MAIN_Line")  # Nowy początek odmierzania każdego opóźnienia.
+rt.advance_time(500)
+rt.scan("MAIN_Line")
+assert running.value == (True, True, True)
+assert second.output("initTrace") == 12345
+```
+
+### Parametry inicjalizacji z Pythona
+
+`Runtime.instantiate(name, *, init=None, inputs=None)` przyjmuje dwa mapowania.
+`init` przekazuje dodatkowe wejścia `FB_init`, a `inputs` wejścia i właściwości
+ustawiane po nim. Nazwy nie rozróżniają wielkości liter, a kolejność przypisań
+odpowiada kolejności wpisów w mapowaniu Pythona. Wszystkie argumenty obu mapowań
+są sprawdzane przed wykonaniem ST. Błędna nazwa, brak wymaganego parametru,
+duplikat różniący się wielkością liter, niezgodny typ lub obcy uchwyt/Cell daje
+`ArgumentError` bez skutków ubocznych kodu użytkownika i bez blokowania Runtime.
+`instantiate(name)` działa nadal, jeśli konstruktor nie wymaga argumentów.
+
+Kontynuując poprzedni przykład, można utworzyć niezależne instancje korzystające
+z tej samej `Cell`, również z komórki utworzonej przez `rt.cell`:
+
+```python
+shared = rt.cell("ST_ConveyorConfig", {"enabled": True, "speed": 0.6})
+standalone = rt.instantiate(
+    "FB_Conveyor",
+    init={"conveyorId": 10, "sharedConfig": shared, "defaultDelay": 900},
+    inputs={"StartDelay": 100, "SpeedFactor": 1.0},
+)
+assert standalone.output("ready") is True
+assert standalone.output("initTrace") == 12345
+standalone.call()
+rt.advance_time(100)
+standalone.call()
+assert standalone.output("actualSpeed") == 0.6
+shared.field("speed").value = 0.2
+standalone.call()
+assert standalone.output("actualSpeed") == 0.2
+```
+
+`TIME` w API Pythona oznacza całkowite milisekundy. Referencje wymagają żywej,
+zapisywalnej komórki zgodnego typu z tego samego Runtime albo całkowitego `0`;
+interfejsy wymagają zgodnego uchwytu FB z tego Runtime albo `0`. Obowiązują
+dotychczasowe zasady czasu życia danych. Deklaracje inicjalizacji nie tworzą
+harmonogramu zależności między instancjami; nie należy zakładać gotowości
+innej instancji tylko dlatego, że jej pamięć została już przydzielona.
+
+Testy `examples/test_conveyor_initialization.py` sprawdzają gotowość przed
+skanem, kolejność i liczniki, osobne timery, żywą wspólną konfigurację,
+restart po wyłączeniu i brak ponownej inicjalizacji podczas zwykłej pracy.
+Pliki przykładu są także fixture kolejności w formacie natywnym do przyszłego
+porównania z TwinCAT. Nie wykonano ich na natywnym TwinCAT; testy emulatora
+nie potwierdzają zgodności kolejności z runtime Beckhoff.
+
+Profil v0.15 dotyczy wyłącznie nowych instancji. Nie obejmuje restartu PLC,
+`RETAIN`/`PERSISTENT`, online change, kopiowania instancji, `FB_exit` ani
+`FB_reinit`. Nieznane atrybuty i konstrukcje są nadal odrzucane, także w kodzie,
+który nie zostanie wywołany. Wcześniejsze przykłady pozostają dostępne.
 
 ## Arytmetyka: profil checked-subset
 
