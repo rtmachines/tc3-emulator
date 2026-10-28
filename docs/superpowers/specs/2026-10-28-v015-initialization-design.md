@@ -42,6 +42,8 @@ and flattening order apply. The parser records arguments separately from post-in
 Post-init assignments use `fb : FB(n := 1) := (input := 2, Property := 3);` and the analogous
 array initializer. Targets are existing writable public inputs and public property setters;
 no arbitrary private state. Reference/interface inputs bind identity rather than copying data.
+Apply post-init entries in ST source order (Python mapping insertion order). Evaluate each ST
+right-hand side immediately before its assignment, after FB_init; a setter may affect later values.
 Parameter and input expressions are checked in the declaring lexical scope. Constant value
 expressions and direct storage values/references are supported; side-effecting calls/property
 reads in declaration expressions may be rejected explicitly to keep setup deterministic.
@@ -58,8 +60,12 @@ continues to work when no required init parameters are missing.
 ## Ordering and inheritance
 
 All owned storage is allocated before initialization. Global/PROGRAM storage is allocated for
-the complete runtime before any startup methods execute. Initialize nested instances before
-their owner, preserving declaration order and existing reference initializer scopes. For each FB:
+the complete runtime before any startup methods execute. A separate preparation pass binds
+declaration reference initializers throughout the allocated persistent tree before lifecycle
+execution, so a nested/global constructor can consume an enclosing or forward reference.
+For transient activations, bind call inputs and prepare declaration references before initializing
+local children. Initialize nested instances before their owner, preserving declaration order
+and existing reference initializer scopes. For each FB:
 
 1. Initialize declared storage and reference bindings.
 2. Execute explicitly declared FB_init implementations from oldest base to most-derived FB.
