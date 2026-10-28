@@ -247,6 +247,80 @@ def test_base_callgraph_includes_unused_derived_implementers(member, body):
         """)
 
 
+INHERITED_DISPATCH_CASES = [
+    (
+        "METHOD M : INT END_METHOD",
+        "METHOD M : INT M := {receiver}.M(); END_METHOD",
+        "METHOD M : INT M := 42; END_METHOD",
+        "result := base.M();",
+    ),
+    (
+        "PROPERTY P : INT GET END_GET END_PROPERTY",
+        "PROPERTY P : INT GET P := {receiver}.P; END_GET END_PROPERTY",
+        "PROPERTY P : INT GET P := 42; END_GET END_PROPERTY",
+        "result := base.P;",
+    ),
+    (
+        "PROPERTY P : INT SET END_SET END_PROPERTY",
+        "PROPERTY P : INT SET {receiver}.P := P; END_SET END_PROPERTY",
+        "PROPERTY P : INT SET observed := P; END_SET END_PROPERTY",
+        "base.P := 42; result := observed;",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "contract,forward,terminal,statement", INHERITED_DISPATCH_CASES, ids=["method", "get", "set"]
+)
+@pytest.mark.parametrize("bases", ["A", "A, B", "B, A"])
+@pytest.mark.parametrize("indexed", [False, True], ids=["scalar", "indexed"])
+def test_inherited_dispatch_excludes_ancestor_only_implementers(
+    contract, forward, terminal, statement, bases, indexed
+):
+    storage = "ARRAY[1..1] OF C" if indexed else "C"
+    receiver = "derived[1]" if indexed else "derived"
+    rt = Runtime.from_source(f"""
+    INTERFACE A {contract} END_INTERFACE
+    INTERFACE B {contract} END_INTERFACE
+    INTERFACE C EXTENDS {bases} END_INTERFACE
+    VAR_GLOBAL derived : {storage}; observed : INT; END_VAR
+    FUNCTION_BLOCK BaseOnly IMPLEMENTS A
+    {forward.format(receiver=receiver)} END_FUNCTION_BLOCK
+    FUNCTION_BLOCK DerivedImpl IMPLEMENTS C
+    {terminal} END_FUNCTION_BLOCK
+    PROGRAM Main VAR base : BaseOnly; target : DerivedImpl; result : INT; END_VAR
+    {receiver} := target; {statement}
+    END_PROGRAM
+    """)
+    rt.scan("Main")
+    assert rt.program_cell("Main", "result").value == 42
+
+
+@pytest.mark.parametrize(
+    "contract,forward",
+    [(contract, forward) for contract, forward, _, _ in INHERITED_DISPATCH_CASES],
+    ids=["method", "get", "set"],
+)
+@pytest.mark.parametrize("bases", ["A", "A, B", "B, A"])
+@pytest.mark.parametrize("indexed", [False, True], ids=["scalar", "indexed"])
+def test_inherited_dispatch_rejects_real_two_way_delegation_cycles(
+    contract, forward, bases, indexed
+):
+    storage = "ARRAY[1..1] OF C" if indexed else "C"
+    receiver = "derived[1]" if indexed else "derived"
+    with pytest.raises(ValidationError, match="Recursive call"):
+        Runtime.from_source(f"""
+        INTERFACE A {contract} END_INTERFACE
+        INTERFACE B {contract} END_INTERFACE
+        INTERFACE C EXTENDS {bases} END_INTERFACE
+        VAR_GLOBAL derived : {storage}; ancestor : BaseOnly; END_VAR
+        FUNCTION_BLOCK BaseOnly IMPLEMENTS A
+        {forward.format(receiver=receiver)} END_FUNCTION_BLOCK
+        FUNCTION_BLOCK DerivedImpl IMPLEMENTS C
+        {forward.format(receiver="ancestor")} END_FUNCTION_BLOCK
+        """)
+
+
 def test_implementer_ancestry_excludes_unrelated_function_blocks():
     rt = Runtime.from_source("""
     INTERFACE A END_INTERFACE INTERFACE B EXTENDS A END_INTERFACE

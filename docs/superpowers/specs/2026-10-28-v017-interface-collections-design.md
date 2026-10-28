@@ -85,8 +85,10 @@ Merge policy is deterministic and independent of declaration-file order:
 An FB implementing a derived interface also implements all its ancestors. This
 applies through FB inheritance as well. Check all effective contracts against
 PUBLIC concrete methods/properties, including inherited/overridden FB members.
-The conservative call graph includes all compatible implementers for inherited
-method/property calls, so indirect recursion cannot evade validation.
+The conservative call graph includes all implementers of the receiver's declared
+interface for inherited method/property calls, independently of the prototype's
+lexical owner or equivalent base order, so indirect recursion cannot evade
+validation without adding impossible ancestor-only receivers.
 
 For assignment and scalar VAR_INPUT arguments (including FB_init), allow concrete
 implementer to interface, same-interface copy, and derived-interface to ancestor

@@ -715,11 +715,21 @@ class _Validator:
             return
         self.fail(f"Incompatible interface binding: expected {expected}, got {actual}", expr.loc)
 
-    def call_edge(self, caller: Pou, target: Pou, *, static: bool = False) -> None:
+    def call_edge(
+        self,
+        caller: Pou,
+        target: Pou,
+        *,
+        static: bool = False,
+        receiver_interface: InterfaceType | None = None,
+    ) -> None:
         if target.name in self.pous.prototype_pous:
+            # An inherited prototype keeps its lexical owner, but dispatch is
+            # restricted to implementers of the receiver's declared contract.
+            assert receiver_interface is not None
             self.calls[caller.name].update(
                 self.pous.dispatch(owner, target).name
-                for owner in self.pous.implementers[target.owner]
+                for owner in self.pous.implementers[receiver_interface.name]
             )
         elif (
             target.owner
@@ -2254,7 +2264,9 @@ class _Validator:
             self.fail(f"PROGRAM VAR_TEMP {field} is private", loc)
         return var.type_name
 
-    def property_target(self, ref: LValue, pou: Pou) -> tuple[LValue | None, Property] | None:
+    def property_target(
+        self, ref: LValue, pou: Pou
+    ) -> tuple[LValue | None, Property, InterfaceType | None] | None:
         """Find a whole property without evaluating its receiver or its getter."""
         receiver = None
         if isinstance(ref, Member):
@@ -2281,10 +2293,11 @@ class _Validator:
             if isinstance(ref, Reference) and self.enum_constant(ref, pou) is not None:
                 return None
             owner = self.reference(receiver, pou)
-        if isinstance(owner, InterfaceType):
+        receiver_interface = owner if isinstance(owner, InterfaceType) else None
+        if receiver_interface is not None:
             owner = owner.name
         prop = self.pous.properties.get((owner, name)) if isinstance(owner, str) else None
-        return (receiver, prop) if prop is not None else None
+        return (receiver, prop, receiver_interface) if prop is not None else None
 
     def reference(
         self, ref: LValue, pou: Pou, *, writable: bool = False, allow_property: bool = False
@@ -2309,7 +2322,7 @@ class _Validator:
             return owner
         property_target = self.property_target(ref, pou)
         if property_target is not None:
-            receiver, prop = property_target
+            receiver, prop, receiver_interface = property_target
             if not allow_property:
                 self.fail("Property is not addressable storage", ref.loc)
             accessor = prop.setter if writable else prop.getter
@@ -2323,7 +2336,7 @@ class _Validator:
             static = isinstance(receiver, Super)
             if static:
                 self.pous.static_dispatch.add(id(ref))
-            self.call_edge(pou, accessor, static=static)
+            self.call_edge(pou, accessor, static=static, receiver_interface=receiver_interface)
             return accessor.return_type
         if isinstance(ref, BitAccess):
             kind = self.reference(ref.base, pou, writable=writable)
@@ -2583,9 +2596,10 @@ class _Validator:
         self.fail(f"Unsupported binary operator {expr.op}", expr.loc)
         raise AssertionError("unreachable")
 
-    def method_target(self, call: Call, pou: Pou) -> Pou | None:
+    def method_target(self, call: Call, pou: Pou) -> tuple[Pou, InterfaceType | None] | None:
         """Resolve instance dispatch without exposing methods as value fields."""
         receiver = None
+        receiver_interface = None
         if isinstance(call.target, Member):
             receiver = call.target.base
             method_name = call.target.name
@@ -2605,6 +2619,7 @@ class _Validator:
             target = self.pous.method_for(owner, method_name)
         else:
             kind = self.reference(receiver, pou)
+            receiver_interface = kind if isinstance(kind, InterfaceType) else None
             target = (
                 self.pous.interface_method_for(kind.name, method_name)
                 if isinstance(kind, InterfaceType)
@@ -2618,7 +2633,7 @@ class _Validator:
         if isinstance(receiver, Super):
             self.pous.static_dispatch.add(id(call))
         self.pous.method_calls[id(call)] = receiver, target.name
-        return target
+        return target, receiver_interface
 
     def action_target(self, call: Call, pou: Pou) -> Pou | None:
         """Resolve statement-only members independently of method-local storage."""
@@ -2648,7 +2663,12 @@ class _Validator:
         simple = isinstance(call.target, Reference) and len(call.target.parts) == 1
         name = call.target.parts[0] if simple else "instance"
         action = self.action_target(call, pou)
-        target = action or self.method_target(call, pou)
+        target = action
+        receiver_interface = None
+        if target is None:
+            method = self.method_target(call, pou)
+            if method is not None:
+                target, receiver_interface = method
         if action is not None:
             if as_expression:
                 self.fail("Action cannot be used as an expression", call.loc)
@@ -2699,7 +2719,12 @@ class _Validator:
                 self.fail(f"Call target {name} is not callable", call.loc)
         if isinstance(call.target, Super):
             self.pous.super_calls[id(call)] = target.name
-        self.call_edge(pou, target, static=id(call) in self.pous.static_dispatch)
+        self.call_edge(
+            pou,
+            target,
+            static=id(call) in self.pous.static_dispatch,
+            receiver_interface=receiver_interface,
+        )
         if as_expression and target.kind not in {"FUNCTION", "METHOD"}:
             self.fail("FB and PROGRAM calls cannot be used as expressions", call.loc)
         parameter_owner = (
