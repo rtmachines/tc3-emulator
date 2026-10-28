@@ -82,7 +82,10 @@ def _xml_program(text: str, source: str) -> Program:
         declaration_text = declaration.text or ""
         implementation_text = st.text or ""
         declaration_source = f"{section_source}:Declaration"
-        first = _lex(declaration_text, declaration_source, None)[0]
+        declaration_tokens = _lex(declaration_text, declaration_source, None)
+        first = declaration_tokens[0]
+        if first.kind == "CALL_AFTER_INIT":
+            first = declaration_tokens[1]
         expected = {"METHOD"} if owner else {"FUNCTION", "FUNCTION_BLOCK", "PROGRAM"}
         if first.kind not in expected:
             raise ParseError("Unsupported TcPOU declaration kind", first.loc)

@@ -149,9 +149,12 @@ def _lex(text: str, source: str, locations: Mapping[int, Location] | None) -> li
                 raise ParseError("Unterminated attribute pragma", position)
             advance()
             pragma = text[start:index]
-            if not re.fullmatch(r"\{\s*attribute\s+'qualified_only'\s*\}", pragma, re.I):
+            match = re.fullmatch(
+                r"\{\s*attribute\s+'(qualified_only|call_after_init)'\s*\}", pragma, re.I
+            )
+            if match is None:
                 raise ParseError("Unsupported attribute pragma", position)
-            tokens.append(_Token("QUALIFIED_ONLY", pragma, position))
+            tokens.append(_Token(match[1].upper(), pragma, position))
         elif char == "'":
             start, position = index, loc()
             advance()
@@ -355,6 +358,22 @@ class _Parser:
                 names.append(self.expect("ID"))
             self.expect(":")
             type_name = self.type_spec()
+            init_arguments = self.arguments() if self.token.kind == "(" else None
+            element_init_arguments = None
+            if (
+                init_arguments is None
+                and self.token.kind == "["
+                and isinstance(type_name, (ArrayType, ArrayBounds))
+            ):
+                self.take()
+                elements = []
+                if self.token.kind != "]":
+                    while True:
+                        elements.append(self.arguments())
+                        if not self.accept(","):
+                            break
+                self.expect("]")
+                element_init_arguments = tuple(elements)
             initial = None
             if self.accept(":="):
                 initial = (
@@ -368,7 +387,16 @@ class _Parser:
                 initial = self.expression()
             self.expect(";")
             variables.extend(
-                VarDecl(n.text, type_name, section, initial, n.loc, constant=constant)
+                VarDecl(
+                    n.text,
+                    type_name,
+                    section,
+                    initial,
+                    n.loc,
+                    constant=constant,
+                    init_arguments=init_arguments,
+                    element_init_arguments=element_init_arguments,
+                )
                 for n in names
             )
         return tuple(variables)
@@ -398,6 +426,11 @@ class _Parser:
         return TypeDecl(name.text, definition, initial, name.loc)
 
     def pou(self) -> Pou:
+        attribute = self.accept("CALL_AFTER_INIT")
+        if attribute and self.token.kind != "FUNCTION_BLOCK":
+            raise ParseError(
+                "call_after_init must immediately precede FUNCTION_BLOCK", attribute.loc
+            )
         if self.token.kind not in {"FUNCTION", "FUNCTION_BLOCK", "PROGRAM"}:
             raise ParseError("Expected FUNCTION, FUNCTION_BLOCK or PROGRAM", self.token.loc)
         kind = self.take()
@@ -439,12 +472,18 @@ class _Parser:
             self.expect("END_VAR")
         ending = "END_" + kind.kind
         body = self.block(
-            {ending, "METHOD", "PROPERTY"} if kind.kind == "FUNCTION_BLOCK" else {ending}
+            {ending, "METHOD", "PROPERTY", "CALL_AFTER_INIT"}
+            if kind.kind == "FUNCTION_BLOCK"
+            else {ending}
         )
         methods = []
         properties = []
-        while kind.kind == "FUNCTION_BLOCK" and self.token.kind in {"METHOD", "PROPERTY"}:
-            if self.token.kind == "METHOD":
+        while kind.kind == "FUNCTION_BLOCK" and self.token.kind in {
+            "METHOD",
+            "PROPERTY",
+            "CALL_AFTER_INIT",
+        }:
+            if self.token.kind in {"METHOD", "CALL_AFTER_INIT"}:
                 methods.append(self.method(name))
             else:
                 properties.append(self.property_declaration(name))
@@ -460,9 +499,13 @@ class _Parser:
             properties=tuple(properties),
             implements=tuple(implements),
             extends=extends,
+            call_after_init=attribute is not None,
         )
 
     def method(self, owner: str, *, prototype: bool = False) -> Pou:
+        attribute = self.accept("CALL_AFTER_INIT")
+        if attribute and self.token.kind != "METHOD":
+            raise ParseError("call_after_init must immediately precede METHOD", attribute.loc)
         start = self.expect("METHOD")
         access = (
             self.take().text if self.token.text in {"PUBLIC", "PROTECTED", "PRIVATE"} else "PUBLIC"
@@ -507,6 +550,7 @@ class _Parser:
             start.loc,
             owner=owner,
             access=access,
+            call_after_init=attribute is not None,
         )
 
     def property_declaration(self, owner: str, *, prototype: bool = False) -> Property:
@@ -915,6 +959,9 @@ class _Parser:
         return Literal(value, position, type_name, sign + token.text)
 
     def call(self, target: LValue) -> Call:
+        return Call(target, self.arguments(), target.loc)
+
+    def arguments(self) -> tuple[Argument, ...]:
         self.expect("(")
         arguments = []
         if self.token.kind != ")":
@@ -928,7 +975,7 @@ class _Parser:
                 if not self.accept(","):
                     break
         self.expect(")")
-        return Call(target, tuple(arguments), target.loc)
+        return tuple(arguments)
 
     def string_literal(self, loc: Location | None = None) -> Literal:
         token = self.expect("STRING_LITERAL")

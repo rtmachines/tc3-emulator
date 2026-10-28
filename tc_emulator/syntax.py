@@ -224,6 +224,8 @@ class VarDecl:
     loc: Location
     default: Value | None = None
     constant: bool = False
+    init_arguments: tuple[Argument, ...] | None = None
+    element_init_arguments: tuple[tuple[Argument, ...], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +288,7 @@ class Pou:
     property_name: str | None = None
     implements: tuple[str, ...] = ()
     extends: str | None = None
+    call_after_init: bool = False
 
     @property
     def result_name(self) -> str:
