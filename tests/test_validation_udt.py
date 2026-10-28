@@ -213,13 +213,9 @@ def test_alias_defaults_and_nested_array_initializers_preserve_declared_element_
     assert registry["F"].variables[0].default["ROWS"] == ((7, 7), (4, 7))
 
 
-@pytest.mark.parametrize("initializer", ["Run", "Other.Run", "0"])
+@pytest.mark.parametrize("initializer", ["Other.Run", "0"])
 def test_enum_type_default_must_belong_to_its_own_enum(initializer):
-    # Short members are legal only for the enum being declared, not an alias.
-    if initializer == "Run":
-        source = "TYPE State : (Idle, Run); Alias : State := Run; END_TYPE"
-    else:
-        source = f"TYPE Other : (Idle, Run); State : (Idle, Run) := {initializer}; END_TYPE"
+    source = f"TYPE Other : (Idle, Run); State : (Idle, Run) := {initializer}; END_TYPE"
     reject(source + function())
 
 

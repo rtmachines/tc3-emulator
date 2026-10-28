@@ -250,7 +250,7 @@ def setup_expression(
     elif isinstance(expected, InterfaceType):
         v.interface_source(expr, expected, scope)
     else:
-        v.require(v.expression(expr, scope), expected, expr.loc)
+        v.require_value(expr, expected, scope)
 
 
 def initialization_edges(v: _Validator) -> None:

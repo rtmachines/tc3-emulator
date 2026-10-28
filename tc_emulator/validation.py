@@ -102,6 +102,7 @@ class Registry(dict[str, Pou]):
     def __init__(self) -> None:
         super().__init__()
         self.types: dict[str, TypeSpec] = {}
+        self.enum_values: dict[int, EnumValue] = {}
         self.interfaces: dict[str, InterfaceDecl] = {}
         self.prototype_pous: dict[str, Pou] = {}
         self.implementers: dict[str, set[str]] = {}
@@ -1087,6 +1088,8 @@ class _Validator:
                         spec = member(spec, field, initial.loc, dependencies, pou)
                     return spec
                 name = initial.parts[0]
+                if len(initial.parts) == 1 and self.enum_candidates(name):
+                    return None
                 if len(initial.parts) != 2 or name not in self.type_declarations:
                     self.fail(f"Unknown constant {name}", initial.loc)
                 return None
@@ -1259,7 +1262,7 @@ class _Validator:
             if candidates:
                 candidate, candidate_scope = candidates[0]
                 value, actual = self.constant_expression(candidate, candidate_scope)
-                self.require(actual, kind, candidate.loc)
+                value = self.assignment_constant(value, actual, kind, candidate.loc)
                 return check_value(kind, value), kind
             return check_value(
                 kind,
@@ -1621,7 +1624,13 @@ class _Validator:
                     members.append((member.name, current))
                 if not members:
                     self.fail("Enum requires at least one member", declaration.loc)
-                result = EnumType(name, tuple(members), definition.base_type)
+                result = EnumType(
+                    name,
+                    tuple(members),
+                    definition.base_type,
+                    strict=definition.strict,
+                    qualified_only=definition.qualified_only,
+                )
                 # Its own qualified default is legal while its definition is active.
                 self.pous.types[name] = result
                 if declaration.initial is not None:
@@ -1761,6 +1770,18 @@ class _Validator:
         prepared = replace(pou, variables=tuple(variables.values()))
         self.pous[pou.name] = original if prepared == original else prepared
 
+    def enum_candidates(self, member: str) -> tuple[str, ...]:
+        """Count declarations, not transparent aliases, without resolving defaults."""
+        return tuple(
+            name
+            for name, declaration in self.type_declarations.items()
+            if (
+                isinstance(declaration.definition, EnumDecl)
+                and not declaration.definition.qualified_only
+                and any(item.name == member for item in declaration.definition.members)
+            )
+        )
+
     def enum_constant(self, ref: Reference, pou: Pou | None = None) -> EnumValue | None:
         if not ref.parts:
             return None
@@ -1769,18 +1790,26 @@ class _Validator:
             pou is not None and name == pou.result_name and pou.kind in _RESULT_KINDS
         ):
             return None
+        member_name = ref.parts[-1]
+        if len(ref.parts) == 1:
+            candidates = self.enum_candidates(name)
+            if len(candidates) > 1:
+                self.fail(f"Ambiguous enum member {name}", ref.loc)
+            if not candidates:
+                return None
+            name = candidates[0]
         declared = self.pous.types.get(name)
         if declared is None and name in self.type_declarations:
             declared = self.resolve_named(name, ref.loc)
         enum_type = canonical_type(declared) if declared is not None else None
         if not isinstance(enum_type, EnumType):
             return None
-        if len(ref.parts) != 2:
+        if len(ref.parts) not in {1, 2}:
             self.fail("Enum constants require a qualified member name", ref.loc)
         for member, value in enum_type.members:
-            if member == ref.parts[1]:
+            if member == member_name:
                 return EnumValue(enum_type, member, value)
-        self.fail(f"Unknown enum member {ref.parts[1]} on {name}", ref.loc)
+        self.fail(f"Unknown enum member {member_name} on {name}", ref.loc)
         raise AssertionError("unreachable")
 
     def initializer(
@@ -1823,10 +1852,11 @@ class _Validator:
                 isinstance(initial, Reference)
                 and enum_scope is not None
                 and len(initial.parts) == 1
+                and initial.parts[0] in dict(enum_scope.members)
             ):
                 initial = replace(initial, parts=(enum_scope.name, *initial.parts))
             value, actual = self.constant_expression(initial, pou)
-            self.require(actual, expected, initial.loc)
+            value = self.assignment_constant(value, actual, expected, initial.loc)
             return check_value(expected, value)
         except (TypeError, ValueError) as error:
             self.fail(str(error), initial.loc)
@@ -2204,6 +2234,7 @@ class _Validator:
         if enum_value is not None:
             if writable:
                 self.fail("Enum constant is not a writable reference", ref.loc)
+            self.pous.enum_values[id(ref)] = enum_value
             return enum_value.enum_type
         if not ref.parts:
             self.fail("Empty reference", ref.loc)
@@ -2270,6 +2301,39 @@ class _Validator:
     def require(self, actual: TypeSpec, category: TypeSpec, loc: Location) -> None:
         if not self.compatible(category, actual):
             self.fail(f"Expected {category}, got {actual}", loc)
+
+    def assignment_constant(
+        self, value: Value, actual: TypeSpec, expected: TypeSpec, loc: Location
+    ) -> Value:
+        """Convert only validated integer constants into declared strict members."""
+        target = canonical_type(expected)
+        if (
+            isinstance(target, EnumType)
+            and target.strict
+            and canonical_type(actual) in _INTEGER_CATEGORIES
+            and type(value) is int
+        ):
+            for name, number in target.members:
+                if number == value:
+                    return EnumValue(target, name, number)
+            self.fail(f"Integer constant {value} is not a member of {target}", loc)
+        self.require(actual, expected, loc)
+        return value
+
+    def require_value(self, expr: Expr, expected: TypeSpec, pou: Pou) -> None:
+        """Check a value boundary; writable bindings retain exact type checking."""
+        actual = self.expression(expr, pou)
+        target = canonical_type(expected)
+        if (
+            isinstance(target, EnumType)
+            and target.strict
+            and canonical_type(actual) in _INTEGER_CATEGORIES
+        ):
+            value, kind = self.constant_expression(expr, pou)
+            converted = self.assignment_constant(value, kind, expected, expr.loc)
+            self.pous.enum_values[id(expr)] = converted
+        else:
+            self.require(actual, expected, expr.loc)
 
     def expression(self, expr: Expr, pou: Pou) -> TypeSpec:
         if isinstance(expr, Literal):
@@ -2561,7 +2625,7 @@ class _Validator:
             elif isinstance(parameter.type_name, InterfaceType):
                 self.interface_source(arg.value, parameter.type_name, pou)
             else:
-                self.require(self.expression(arg.value, pou), parameter.type_name, arg.loc)
+                self.require_value(arg.value, parameter.type_name, pou)
         receiver = self.pous.action_calls[id(call)][0] if action is not None else None
         local_action = action is not None and (
             receiver is None or isinstance(receiver, (This, Super))
@@ -2609,10 +2673,9 @@ class _Validator:
                 if isinstance(target, InterfaceType):
                     self.interface_source(statement.value, target, pou)
                     continue
-                actual = self.expression(statement.value, pou)
                 if not is_value_type(target):
                     self.fail("Cannot assign an FB instance", statement.loc)
-                self.require(actual, target, statement.loc)
+                self.require_value(statement.value, target, pou)
             elif isinstance(statement, CallStatement):
                 self.call(statement.call, pou, as_expression=False)
             elif isinstance(statement, If):
@@ -2630,6 +2693,8 @@ class _Validator:
                         if isinstance(label, Reference):
                             value, actual = self.constant_expression(label, pou)
                             self.require(actual, selector, label.loc)
+                            if isinstance(value, EnumValue):
+                                self.pous.enum_values[id(label)] = value
                             key = (
                                 value.value
                                 if isinstance(value, EnumValue)

@@ -813,6 +813,9 @@ class Engine:
         ctx: Context,
     ) -> tuple[Value, TypeSpec]:
         try:
+            if id(expr) in self.registry.enum_values:
+                value = self.registry.enum_values[id(expr)]
+                return value, value.enum_type
             if id(expr) in self.registry.property_reads:
                 receiver, name = self.registry.property_reads[id(expr)]
                 owner = self.property_owner(receiver, frame, ctx)

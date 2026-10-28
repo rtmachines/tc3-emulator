@@ -244,6 +244,8 @@ class EnumMember:
 class EnumDecl:
     members: tuple[EnumMember, ...]
     base_type: str = "INT"
+    strict: bool = False
+    qualified_only: bool = False
 
 
 @dataclass(frozen=True)

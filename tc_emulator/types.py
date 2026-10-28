@@ -173,6 +173,8 @@ class EnumType:
     members: tuple[tuple[str, int], ...]
     base_type: str = "INT"
     default_member: str | None = None
+    strict: bool = False
+    qualified_only: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", self.name.upper())

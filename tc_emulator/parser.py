@@ -150,7 +150,7 @@ def _lex(text: str, source: str, locations: Mapping[int, Location] | None) -> li
             advance()
             pragma = text[start:index]
             match = re.fullmatch(
-                r"\{\s*attribute\s+'(qualified_only|call_after_init)'\s*\}", pragma, re.I
+                r"\{\s*attribute\s+'(strict|qualified_only|call_after_init)'\s*\}", pragma, re.I
             )
             if match is None:
                 raise ParseError("Unsupported attribute pragma", position)
@@ -296,15 +296,21 @@ class _Parser:
         global_location = None
         qualified_only = False
         while self.token.kind != "EOF":
+            attributes = {}
+            while self.token.kind in {"STRICT", "QUALIFIED_ONLY"}:
+                attribute = self.take()
+                if attribute.kind in attributes:
+                    raise ParseError("Duplicate attribute pragma", attribute.loc)
+                attributes[attribute.kind] = attribute
             if self.accept("TYPE"):
-                types.append(self.type_declaration())
+                types.append(self.type_declaration(attributes))
                 while self.token.kind != "END_TYPE":
                     types.append(self.type_declaration())
                 self.expect("END_TYPE")
-            elif self.token.kind in {"QUALIFIED_ONLY", "VAR_GLOBAL"}:
-                if self.token.kind == "QUALIFIED_ONLY":
-                    attribute = self.take()
-                    if global_location is not None or self.token.kind != "VAR_GLOBAL":
+            elif self.token.kind == "VAR_GLOBAL":
+                if attributes:
+                    attribute = next(iter(attributes.values()))
+                    if set(attributes) != {"QUALIFIED_ONLY"} or global_location is not None:
                         raise ParseError(
                             "qualified_only must immediately precede the first VAR_GLOBAL section",
                             attribute.loc,
@@ -319,8 +325,12 @@ class _Parser:
                 )
                 self.expect("END_VAR")
             elif self.token.kind == "INTERFACE":
+                if attributes:
+                    raise ParseError("Enum attributes must immediately precede TYPE", attribute.loc)
                 interfaces.append(self.interface_declaration())
             else:
+                if attributes:
+                    raise ParseError("Enum attributes must immediately precede TYPE", attribute.loc)
                 pous.append(self.pou())
         gvls = ()
         if global_location is not None:
@@ -401,7 +411,7 @@ class _Parser:
             )
         return tuple(variables)
 
-    def type_declaration(self) -> TypeDecl:
+    def type_declaration(self, attributes=None) -> TypeDecl:
         name = self.expect("ID")
         self.expect(":")
         if self.accept("STRUCT"):
@@ -417,9 +427,18 @@ class _Parser:
                     break
             self.expect(")")
             base_type = self.take().text if self.token.kind == "ID" else "INT"
-            definition = EnumDecl(tuple(members), base_type)
+            definition = EnumDecl(
+                tuple(members),
+                base_type,
+                strict=bool(attributes and "STRICT" in attributes),
+                qualified_only=bool(attributes and "QUALIFIED_ONLY" in attributes),
+            )
         else:
             definition = self.type_spec()
+        if attributes and not isinstance(definition, EnumDecl):
+            raise ParseError(
+                "Enum attributes require an enum TYPE", next(iter(attributes.values())).loc
+            )
         initial = self.initializer() if self.accept(":=") else None
         if self.token.kind != "END_TYPE":
             self.expect(";")
