@@ -1898,10 +1898,13 @@ class _Validator:
 
     def constant_owner(self, pou: Pou | None, loc: Location, *, base: bool = False) -> Pou:
         if pou is None or (
-            pou.kind not in {"FUNCTION_BLOCK", "PROPERTY_DECL"} and pou.kind not in _MEMBER_KINDS
+            pou.kind not in {"FUNCTION_BLOCK", "PROPERTY_DECL", "ACTION"}
+            and pou.kind not in _MEMBER_KINDS
         ):
             self.fail("THIS/SUPER requires an owning FUNCTION_BLOCK", loc)
         owner = pou if pou.kind == "FUNCTION_BLOCK" else self.pous[pou.owner]
+        if owner.kind != "FUNCTION_BLOCK":
+            self.fail("THIS/SUPER requires an owning FUNCTION_BLOCK", loc)
         if base:
             parent = self.pous.bases.get(owner.name)
             if parent is None:

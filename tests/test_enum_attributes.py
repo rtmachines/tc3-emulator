@@ -400,3 +400,48 @@ def test_strict_type_default_accepts_named_integer_constant(qualified):
     source += "FUNCTION F : E END_FUNCTION"
     value = Runtime.from_source(source).call("F").value
     assert (value.name, value.value, value.enum_type.default_member) == ("RUN", 2, "RUN")
+
+
+@pytest.mark.parametrize("reference", ["k", "THIS^.k", "SUPER^.k"])
+@pytest.mark.parametrize("boundary", ["assignment", "input", "setter"])
+def test_inherited_fb_action_converts_qualified_owner_constants(reference, boundary):
+    body = {
+        "assignment": f"state := {reference};",
+        "input": f"state := Echo({reference});",
+        "setter": f"THIS^.Mode := {reference};",
+    }[boundary]
+    runtime = Runtime.from_source(
+        enum_source(qualified=True)
+        + f"""
+        FUNCTION_BLOCK Base
+        VAR CONSTANT k : INT := 2; END_VAR
+        END_FUNCTION_BLOCK
+        FUNCTION_BLOCK Owner EXTENDS Base
+        VAR_OUTPUT state : E; END_VAR
+        METHOD Echo : E VAR_INPUT value : E; END_VAR Echo := value; END_METHOD
+        PROPERTY Mode : E
+        GET Mode := state; END_GET SET state := Mode; END_SET END_PROPERTY
+        ACTION SetState: {body} END_ACTION
+        END_FUNCTION_BLOCK
+        FUNCTION_BLOCK Child EXTENDS Owner END_FUNCTION_BLOCK
+        """
+    )
+    instance = runtime.instantiate("Child")
+    assert instance.output("state").name == "STOP"
+    instance.call_action("SetState")
+    value = instance.output("state")
+    assert isinstance(value, EnumValue)
+    assert (value.type_name, value.name, value.value) == ("E", "RUN", 2)
+
+
+@pytest.mark.parametrize("qualifier", ["THIS", "SUPER"])
+def test_program_action_cannot_qualify_owner_constants_with_fb_only_keywords(qualifier):
+    with pytest.raises(ValidationError, match="owning FUNCTION_BLOCK"):
+        Runtime.from_source(
+            enum_source()
+            + f"""PROGRAM Main
+            VAR CONSTANT k : INT := 2; END_VAR
+            VAR_OUTPUT state : E; END_VAR
+            ACTION SetState: state := {qualifier}^.k; END_ACTION
+            END_PROGRAM"""
+        )
