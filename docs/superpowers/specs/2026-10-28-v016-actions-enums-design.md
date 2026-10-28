@@ -68,6 +68,9 @@ not evidence of execution on Beckhoff TwinCAT.
   before an enum TYPE declaration, either order. Reject duplicates, values,
   misplaced attributes and attributes on non-enum TYPE definitions. Preserve
   existing GVL qualified_only and FB/method call_after_init behavior.
+  In a multi-declaration TYPE block the preceding pragmas apply only to the first
+  declaration; subsequent declarations remain unmarked. Pragmas inside the block
+  are rejected. Native TcDUT already contains one declaration.
 - Append flags with False defaults to enum AST/resolved type metadata. `.st`
   and `.TcDUT` obey the same rules, with original declaration locations.
 - `qualified_only` requires `Enum.Member` outside that enum's own default-value
