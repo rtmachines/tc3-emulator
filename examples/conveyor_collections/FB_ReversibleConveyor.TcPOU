@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_ReversibleConveyor">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_ReversibleConveyor EXTENDS FB_ConveyorBase IMPLEMENTS I_Reversible
+VAR
+    reverseState : BOOL;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST/>
+    </Implementation>
+    <Property Name="Reverse">
+      <Declaration><![CDATA[PROPERTY PUBLIC Reverse : BOOL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[Reverse := reverseState;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[reverseState := Reverse;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+    <Property Name="ActualSpeed">
+      <Declaration><![CDATA[PROPERTY PUBLIC ActualSpeed : REAL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[ActualSpeed := SUPER^.ActualSpeed;
+IF reverseState THEN ActualSpeed := -ActualSpeed; END_IF;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+  </POU>
+</TcPlcObject>

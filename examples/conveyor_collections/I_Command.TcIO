@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <Itf Name="I_Command">
+    <Declaration><![CDATA[INTERFACE I_Command]]></Declaration>
+    <Method Name="Start">
+      <Declaration><![CDATA[METHOD Start]]></Declaration>
+    </Method>
+    <Method Name="Stop">
+      <Declaration><![CDATA[METHOD Stop]]></Declaration>
+    </Method>
+    <Method Name="Reset">
+      <Declaration><![CDATA[METHOD Reset]]></Declaration>
+    </Method>
+    <Method Name="Cycle">
+      <Declaration><![CDATA[METHOD Cycle
+VAR_INPUT
+    enabled : BOOL;
+    sensor : BOOL;
+    blocked : BOOL;
+END_VAR
+]]></Declaration>
+    </Method>
+  </Itf>
+</TcPlcObject>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_JamConveyor">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_JamConveyor EXTENDS FB_ConveyorBase
+VAR
+    jamTimer : TON;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST/>
+    </Implementation>
+    <Method Name="DetectJam">
+      <Declaration><![CDATA[METHOD PROTECTED DetectJam : BOOL
+VAR_INPUT
+    blocked : BOOL;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[jamTimer(IN := blocked, PT := T#300ms);
+DetectJam := jamTimer.Q;]]></ST>
+      </Implementation>
+    </Method>
+  </POU>
+</TcPlcObject>

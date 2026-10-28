@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <Itf Name="I_Status">
+    <Declaration><![CDATA[INTERFACE I_Status]]></Declaration>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY Running : BOOL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+      </Get>
+    </Property>
+    <Property Name="Alarm">
+      <Declaration><![CDATA[PROPERTY Alarm : STRING(80)]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+      </Get>
+    </Property>
+    <Property Name="ProductCount">
+      <Declaration><![CDATA[PROPERTY ProductCount : DINT]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+      </Get>
+    </Property>
+    <Property Name="ActualSpeed">
+      <Declaration><![CDATA[PROPERTY ActualSpeed : REAL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+      </Get>
+    </Property>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY SpeedSetpoint : REAL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+      </Get>
+      <Set Name="Set">
+        <Declaration/>
+      </Set>
+    </Property>
+  </Itf>
+</TcPlcObject>

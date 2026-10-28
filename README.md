@@ -4,7 +4,7 @@ Interpreter ograniczonego podzbioru Structured Text napisany w Pythonie.
 Uruchamia funkcje, bloki funkcyjne i programy PLC z GVL bez instalacji TwinCAT, również na Linuxie.
 Przeznaczony do szybkich testów logiki w Pythonie/pytest.
 
-**Wersja 0.16 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
+**Wersja 0.17 obsługuje ograniczony podzbiór TwinCAT 3.** Poniżej opisujemy
 obsługiwane konstrukcje; pozostałe są odrzucane. Przejście testu nie potwierdza
 pełnej zgodności z runtime Beckhoff. Nie wykonuje binariów ani bibliotek TwinCAT.
 
@@ -1232,10 +1232,11 @@ wybiera bieżącą instancję raz, przed obliczeniem argumentów lub wartości d
 Obsługujemy bezpośrednie zmienne interfejsowe w `VAR`, `VAR_INPUT`, GVL,
 `VAR_TEMP` FB/PROGRAM i `VAR_INST` metod. Domyślna wartość to null, zapisywane
 jako dosłowne całkowite `0`. ST pozwala przypisać implementujący FB, zmienną tego
-samego interfejsu albo `0`, a także porównać interfejs z `0` przez `=`/`<>`.
+samego interfejsu, interfejs pochodny do bazowego albo `0`, a także porównać
+interfejs z `0` przez `=`/`<>`.
 Przypisanie między zmiennymi kopiuje wskazywaną instancję, więc późniejsze
 przestawienie jednej zmiennej nie zmienia drugiej. Typy interfejsów są nominalne:
-identyczne zestawy metod nie wystarczają do przypisania między różnymi interfejsami.
+identyczne zestawy metod nie wystarczają do przypisania między niepowiązanymi interfejsami.
 
 `Runtime.call()`, `FBHandle.call()`, `call_method()` i `set_input()` przyjmują
 na wejściu interfejsowym `FBHandle` z tego samego Runtime albo dokładnie całkowite
@@ -1284,10 +1285,11 @@ nieprawidłowe uchwyty oraz niezależne zliczanie produktów.
 
 `.TcIO` obsługuje natywne `TcPlcObject/Itf` z deklaracjami Method i Property/Get/Set.
 Sekcje Implementation są odrzucane; kolejność plików `.TcIO`/`.TcPOU` nie ma znaczenia.
-Interfejsy nie obsługują dziedziczenia `EXTENDS`, `__QUERYINTERFACE`, konwersji,
-wyników interfejsowych, `VAR_OUTPUT`/`VAR_IN_OUT` typu interfejsowego ani interfejsów
-wewnątrz STRUCT/ARRAY, aliasów i stałych. Właściwości interfejsu mają zakres typów
-wartościowych taki jak właściwości FB z v0.11.
+Od v0.17 interfejsy obsługują wielobazowe `EXTENDS` i bezpośrednie tablice
+stałowymiarowe opisane poniżej. Poza profilem pozostają `__QUERYINTERFACE`,
+niejawne konwersje w dół, wyniki interfejsowe, `VAR_OUTPUT`/`VAR_IN_OUT` typu
+interfejsowego, pola STRUCT, aliasy i stałe interfejsowe. Właściwości interfejsu
+mają zakres typów wartościowych taki jak właściwości FB z v0.11.
 
 Runtime sprawdza czas życia referencji: FB lokalny funkcji/metody/akcesora lub
 `VAR_TEMP` przestaje być ważny po zakończeniu wywołania, także gdy wskazuje go
@@ -1305,6 +1307,83 @@ zajmuje jedną pozycję w limicie pamięci skalarnej.
 
 Semantyka referencyjna: [deklaracja interfejsu](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/4256428299.html)
 i [zmienne interfejsowe](https://infosys.beckhoff.com/content/1033/tc3_plc_intro/5680748299.html).
+
+## Dziedziczenie i kolekcje interfejsów (v0.17)
+
+`INTERFACE I_Conveyor EXTENDS I_Command, I_Status` łączy odziedziczone kontrakty;
+`I_Reversible EXTENDS I_Conveyor` dodaje właściwość `Reverse`. Kolejność deklaracji
+nie ma znaczenia. Diament z tym samym kontraktem jest akceptowany, a sprzeczne
+metody, właściwości, akcesory lub wartości domyślne są odrzucane. Implementujący FB
+spełnia też kontrakty wszystkich przodków. Dozwolone są przypisania konkretnego FB
+do interfejsu oraz interfejsu pochodnego do bazowego; kierunek odwrotny i konwersje
+między rodzeństwem są odrzucane. Widoczność członków wynika z typu deklaracji.
+
+`devices : ARRAY[1..3] OF I_Conveyor` tworzy osobne, początkowo puste sloty.
+Przypisanie elementu kopiuje bieżące powiązanie, zachowując tożsamość FB.
+Obsługujemy indeksowane metody, GET/SET, porównania elementów z dosłownym `0`
+i `LOWER_BOUND`/`UPPER_BOUND`. Odbiorca wywołania jest wybierany raz, przed
+argumentami lub prawą stroną SET. Sloty nie inicjalizują ponownie swoich celów
+i nie przedłużają ich czasu życia. Inspekcja zwraca odłączone zagnieżdżone krotki
+metadanych, bez uruchamiania getterów.
+
+Tablice interfejsów są bezpośrednim magazynem w dozwolonych sekcjach `VAR`, GVL,
+`VAR_TEMP` i `VAR_INST`; lokalne sloty mają czas życia danego wywołania.
+Profil obejmuje 1–8 wymiarów z domkniętymi granicami DINT, maksymalnie 1000000
+elementów. Każdy slot zajmuje jeden liść w limicie 1000000 liści; limit własnych
+instancji FB pozostaje 10000. Poza profilem są inicjalizatory tablic, argumenty
+konstruktorów na tablicy interfejsowej, operacje na całych tablicach, parametry
+formalne tablic interfejsów w każdym trybie, aliasy, pola STRUCT, zagnieżdżone
+`ARRAY OF ARRAY`, `REFERENCE TO` tablicy interfejsów i kowariancja tablic.
+Bezpośrednie tablice wielowymiarowe są obsługiwane.
+
+Python nie udostępnia ich przez `Cell`, `ArrayValue`, `check_value`, `default_value`
+ani selektory własnych FB (`program_fb`, `global_fb`, `fb`). Wiązanie odbywa się
+przez skalarne wejścia interfejsowe metod ST, np. `Bind(index, target)`.
+Błędny uchwyt z innego Runtime powoduje `ArgumentError` przed zmianą stanu;
+błędny indeks wykonawczy, null przy dereferencji i wygasły cel powodują fault.
+
+`examples/conveyor_collections/` zawiera natywne XML `.TcIO`/`.TcPOU`/`.TcGVL`.
+Menedżer `FB_Line` wiąże trzy różne FB w `FB_init`, przed pierwszym skanem, i steruje
+nimi wyłącznie przez `I_Conveyor`. Standardowy przenośnik startuje po 100 ms,
+odwracalny po 250 ms i raportuje ujemną prędkość, a trzeci po 500 ms; trzeci
+zatrzaskuje alarm po 300 ms blokady. Usunięcie blokady wymaga `Reset` i `Start`.
+`Bind` zachowuje stan nowego i poprzedniego celu; poprzedni przestaje otrzymywać
+polecenia menedżera. Powiązanie `0` publikuje `FALSE`, `0.0`, `0`, `'Not bound'`.
+Testy wykonują te pliki w emulatorze. Natywny format nie oznacza potwierdzonego
+wykonania ani zgodności wykonawczej na TwinCAT; tego przykładu tam nie uruchamiano.
+
+Uruchomienie z katalogu projektu:
+
+```python
+from pathlib import Path
+import math
+from tc_emulator import Runtime
+
+source = Path("examples/conveyor_collections")
+runtime = Runtime.from_files(sorted(source.glob("*.Tc*"), reverse=True))
+line = runtime.program_fb("MAIN_Line", "line")
+assert all(slot["valid"] for slot in line.inspect()["DEVICES"])
+line.call_method("Start")
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "running").value == (False, False, False)
+runtime.advance_time(500)
+runtime.scan("MAIN_Line")
+speeds = runtime.global_cell("GVL_Line", "actualSpeed").value
+assert all(math.isclose(a, b, abs_tol=1e-6) for a, b in zip(speeds, (0.5, -0.75, 0.6)))
+replacement = runtime.instantiate("FB_StandardConveyor", init={"startDelay": 0})
+replacement.set_property("SpeedSetpoint", 0.8)
+replacement.call_method("Start")
+line.call_method("Bind", index=2, target=replacement)
+runtime.scan("MAIN_Line")
+assert replacement.get_property("Running") is True
+assert replacement.output("initCount") == 1
+line.call_method("Bind", index=2, target=0)
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "alarm").element(2).value == "Not bound"
+line.call_method("Stop")
+runtime.scan("MAIN_Line")
+assert runtime.global_cell("GVL_Line", "running").value == (False, False, False)
+```
 
 ## Dziedziczenie bloków funkcyjnych (v0.13)
 

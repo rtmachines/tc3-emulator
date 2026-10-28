@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_ConveyorBase">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_ConveyorBase IMPLEMENTS I_Conveyor
+VAR_OUTPUT
+    initCount : DINT;
+    cycleCount : DINT;
+END_VAR
+VAR
+    startup : TON;
+    productEdge : R_TRIG;
+    delay : TIME;
+    requested : BOOL;
+    runningState : BOOL;
+    lastBlocked : BOOL;
+    alarmText : STRING(80);
+    count : DINT;
+    speed : REAL;
+END_VAR
+]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[(* All behavior is called through the interface methods. *)]]></ST>
+    </Implementation>
+    <Method Name="FB_init">
+      <Declaration><![CDATA[METHOD PUBLIC FB_init : BOOL
+VAR_INPUT
+    bInitRetains : BOOL;
+    bInCopyCode : BOOL;
+    startDelay : TIME;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[delay := startDelay;
+initCount := initCount + 1;
+FB_init := TRUE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Start">
+      <Declaration><![CDATA[METHOD PUBLIC Start]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF alarmText = '' THEN requested := TRUE; END_IF;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Stop">
+      <Declaration><![CDATA[METHOD PUBLIC Stop]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[requested := FALSE;
+runningState := FALSE;
+startup(IN := FALSE, PT := delay);]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Reset">
+      <Declaration><![CDATA[METHOD PUBLIC Reset]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[IF NOT lastBlocked THEN alarmText := ''; END_IF;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="DetectJam">
+      <Declaration><![CDATA[METHOD PROTECTED DetectJam : BOOL
+VAR_INPUT
+    blocked : BOOL;
+END_VAR]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[DetectJam := FALSE;]]></ST>
+      </Implementation>
+    </Method>
+    <Method Name="Cycle">
+      <Declaration><![CDATA[METHOD PUBLIC Cycle
+VAR_INPUT
+    enabled : BOOL;
+    sensor : BOOL;
+    blocked : BOOL;
+END_VAR
+]]></Declaration>
+      <Implementation>
+        <ST><![CDATA[cycleCount := cycleCount + 1;
+lastBlocked := blocked;
+IF THIS^.DetectJam(blocked := blocked) THEN
+    alarmText := 'Jammed';
+    requested := FALSE;
+END_IF;
+startup(IN := requested AND enabled AND alarmText = '', PT := delay);
+runningState := startup.Q;
+productEdge(CLK := sensor);
+IF runningState AND productEdge.Q THEN count := count + 1; END_IF;
+]]></ST>
+      </Implementation>
+    </Method>
+    <Property Name="Running">
+      <Declaration><![CDATA[PROPERTY PUBLIC Running : BOOL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[Running := runningState;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="Alarm">
+      <Declaration><![CDATA[PROPERTY PUBLIC Alarm : STRING(80)]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[Alarm := alarmText;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="ProductCount">
+      <Declaration><![CDATA[PROPERTY PUBLIC ProductCount : DINT]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[ProductCount := count;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="ActualSpeed">
+      <Declaration><![CDATA[PROPERTY PUBLIC ActualSpeed : REAL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[IF runningState THEN ActualSpeed := speed; ELSE ActualSpeed := 0.0; END_IF;]]></ST>
+        </Implementation>
+      </Get>
+    </Property>
+    <Property Name="SpeedSetpoint">
+      <Declaration><![CDATA[PROPERTY PUBLIC SpeedSetpoint : REAL]]></Declaration>
+      <Get Name="Get">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[SpeedSetpoint := speed;]]></ST>
+        </Implementation>
+      </Get>
+      <Set Name="Set">
+        <Declaration/>
+        <Implementation>
+          <ST><![CDATA[speed := SpeedSetpoint;]]></ST>
+        </Implementation>
+      </Set>
+    </Property>
+  </POU>
+</TcPlcObject>

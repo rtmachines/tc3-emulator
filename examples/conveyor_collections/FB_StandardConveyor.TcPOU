@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="FB_StandardConveyor">
+    <Declaration><![CDATA[FUNCTION_BLOCK FB_StandardConveyor EXTENDS FB_ConveyorBase]]></Declaration>
+    <Implementation>
+      <ST/>
+    </Implementation>
+  </POU>
+</TcPlcObject>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1">
+  <POU Name="MAIN_Line">
+    <Declaration><![CDATA[PROGRAM MAIN_Line
+VAR
+    (* Native-format fixture; execution on TwinCAT has not been verified. *)
+    standard : FB_StandardConveyor(startDelay := T#100ms) := (SpeedSetpoint := 0.5);
+    reversible : FB_ReversibleConveyor(startDelay := T#250ms) := (SpeedSetpoint := 0.75, Reverse := TRUE);
+    jam : FB_JamConveyor(startDelay := T#500ms) := (SpeedSetpoint := 0.6);
+    line : FB_Line(first := standard, second := reversible, third := jam);
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[line();]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
