@@ -6,6 +6,12 @@ from dataclasses import replace
 
 from .bitwise import bit_width, bitwise_result_type, bitwise_value, read_bit
 from .errors import ValidationError
+from .initialization import (
+    InstanceSetup,
+    initialization_contracts,
+    initialization_declarations,
+    initialization_edges,
+)
 from .standard_blocks import STANDARD_BLOCK_NAMES, standard_block_definitions
 from .standard_functions import bind_arguments, infer_result, is_standard_function
 from .syntax import (
@@ -116,6 +122,9 @@ class Registry(dict[str, Pou]):
         self.effective_methods: dict[tuple[str, str], str] = {}
         self.super_calls: dict[int, str] = {}
         self.static_dispatch: set[int] = set()
+        self.initialization_methods: dict[str, tuple[Pou, ...]] = {}
+        self.initialization_hooks: dict[str, tuple[Pou, ...]] = {}
+        self.instance_initializers: dict[tuple[str, str], tuple[InstanceSetup, ...]] = {}
 
     @staticmethod
     def lexical_owner(pou: Pou) -> str | None:
@@ -252,7 +261,7 @@ class _Validator:
             names = {var.name for var in owner.variables} | {owner.name}
             for method in owner.methods:
                 name = method.result_name
-                if name in names or name in {"FB_INIT", "FB_REINIT", "FB_EXIT"}:
+                if name in names or name in {"FB_REINIT", "FB_EXIT"}:
                     self.fail(f"Duplicate or reserved method name {name}", method.loc)
                 if (
                     method.kind != "METHOD"
@@ -325,13 +334,16 @@ class _Validator:
             self.pous.properties[key] = replace(prop, type_name=kind, getter=getter, setter=setter)
         self.inherited_members(resolved=True)
         self.interface_contracts()
+        initialization_contracts(self)
         self.reject_cycles(self.contains, "FB containment")
         for pou in self.pous.values():
             try:
                 self.reference_initializers(pou)
+                initialization_declarations(self, pou)
                 self.statements(pou.body, pou, 0)
             except RecursionError as error:
                 raise ValidationError("Validation nesting limit exceeded", pou.loc) from error
+        initialization_edges(self)
         self.reject_cycles(self.calls, "Recursive call")
         return self.pous
 
@@ -405,7 +417,12 @@ class _Validator:
                 )
 
             wanted, actual = parameters(base), parameters(derived)
-            matches = matches and len(wanted) == len(actual)
+            matches = matches and (
+                len(wanted) <= len(actual)
+                if derived.result_name == "FB_INIT"
+                else len(wanted) == len(actual)
+            )
+            matches = matches and (not base.call_after_init or derived.call_after_init)
             matches = matches and all(
                 a.name == b.name
                 and a.section == b.section
@@ -864,8 +881,8 @@ class _Validator:
             if isinstance(kind, ArrayType) and self.is_fb_type(kind.element_type):
                 kind = FBArrayType(kind.bounds, kind.element_type)
             if isinstance(kind, FBArrayType):
-                if var.constant or var.initial is not None:
-                    self.fail("FB arrays cannot be constant or have initializers", var.loc)
+                if var.constant:
+                    self.fail("FB arrays cannot be constant", var.loc)
                 if var.section not in {"VAR", "VAR_TEMP", "VAR_INST"}:
                     self.fail("FB arrays require owned local or global storage", var.loc)
             if isinstance(kind, OpenArrayType):
@@ -1646,8 +1663,6 @@ class _Validator:
                 if var.section not in {"VAR", "VAR_TEMP", "VAR_INST"}:
                     self.fail("FB instances must be local VAR or FB VAR_TEMP", var.loc)
                 self.contains[pou.name].add(target.name)
-                if var.initial is not None:
-                    self.fail("FB instance initializers are unsupported", var.loc)
             elif isinstance(kind, OpenArrayType):
                 var = replace(
                     var,
@@ -1677,6 +1692,10 @@ class _Validator:
                         )
                 except (TypeError, ValueError) as error:
                     self.fail(str(error), var.loc)
+            if (var.init_arguments is not None or var.element_init_arguments is not None) and not (
+                target is not None and target.kind == "FUNCTION_BLOCK"
+            ):
+                self.fail("Initialization arguments require a function-block instance", var.loc)
             variables[var.name] = var
         self.variables[pou.name] = variables
         prepared = replace(pou, variables=tuple(variables.values()))
@@ -2345,6 +2364,8 @@ class _Validator:
         name = call.target.parts[0] if simple else "instance"
         target = self.method_target(call, pou)
         if target is not None:
+            if target.result_name == "FB_INIT":
+                self.fail("Explicit FB_init calls are unsupported", call.loc)
             if as_expression and target.return_type is None:
                 self.fail("Void method cannot be used as an expression", call.loc)
         elif simple and self.variable_binding(call.target, pou) is None:
@@ -2548,7 +2569,10 @@ class _Validator:
 
         def visit(name: str) -> None:
             if name in active:
-                self.fail(f"{description} cycle involving {name}", self.pous[name].loc)
+                self.fail(
+                    f"{description} cycle involving {name}",
+                    self.pous[name.removeprefix("$INIT:")].loc,
+                )
             if name in done:
                 return
             active.add(name)
@@ -2562,5 +2586,6 @@ class _Validator:
                 visit(name)
             except RecursionError as error:
                 raise ValidationError(
-                    f"{description} validation nesting limit exceeded", self.pous[name].loc
+                    f"{description} validation nesting limit exceeded",
+                    self.pous[name.removeprefix("$INIT:")].loc,
                 ) from error

@@ -76,6 +76,14 @@ class Runtime:
         self._faulted = False
         self._now_ms = 0
         self._engine = Engine(self._registry, self)
+        try:
+            self._engine.initialize(Context(self._max_steps, self._max_call_depth))
+        except ExecutionError:
+            self._faulted = True
+            raise
+        except RecursionError as error:
+            self._faulted = True
+            raise ExecutionError("Instance initialization nesting limit exceeded") from error
 
     @classmethod
     def from_source(
@@ -87,7 +95,7 @@ class Runtime:
         max_steps: int = 100_000,
         max_call_depth: int = 128,
     ) -> Runtime:
-        """Parse and validate every POU in a string without executing it."""
+        """Parse, validate and initialize persistent instances in a source string."""
         return cls(
             parse(text, source, gvl_name=gvl_name),
             max_steps=max_steps,
@@ -146,9 +154,90 @@ class Runtime:
         except (TypeError, ValueError, ParseError) as error:
             raise ArgumentError(str(error)) from error
 
-    def instantiate(self, name: str) -> FBHandle:
-        """Create an independent FB instance with its declared initial state."""
-        return FBHandle(self, self._new_frame(self._pou(name, "FUNCTION_BLOCK")))
+    def instantiate(
+        self,
+        name: str,
+        *,
+        init: Mapping[str, object] | None = None,
+        inputs: Mapping[str, object] | None = None,
+    ) -> FBHandle:
+        """Create an initialized FB, checking all mappings before executing ST."""
+        pou = self._pou(name, "FUNCTION_BLOCK")
+        init = self._initialization_mapping(init, pou)
+        inputs = self._initialization_mapping(inputs, pou)
+        methods = self._registry.initialization_methods.get(pou.name, ())
+        if any(name in {"BINITRETAINS", "BINCOPYCODE"} for name in init):
+            raise ArgumentError("System FB_init flags cannot be supplied", pou.loc)
+        if methods:
+            arguments = self._arguments(
+                methods[-1], {**init, "BINITRETAINS": True, "BINCOPYCODE": False}
+            )
+        else:
+            if init:
+                raise ArgumentError("Function block has no FB_init parameters", pou.loc)
+            arguments = {}
+        posts = []
+        fields = {
+            var.name: var
+            for var in self._registry.variables_for(pou)
+            if var.section == "VAR_INPUT" and not var.constant
+        }
+        for field, value in inputs.items():
+            prop = self._registry.properties.get((pou.name, field))
+            if field in fields:
+                kind = fields[field].type_name
+            elif (
+                prop is not None
+                and prop.access == "PUBLIC"
+                and prop.setter is not None
+                and prop.setter.access == "PUBLIC"
+            ):
+                kind = prop.type_name
+            else:
+                raise ArgumentError(
+                    f"Unknown writable public post-init input/property {field}", pou.loc
+                )
+            if isinstance(kind, ReferenceType):
+                value = self._reference_argument(kind, value, pou.loc)
+            elif isinstance(kind, InterfaceType):
+                value = self._interface_argument(kind, value, pou.loc)
+            else:
+                try:
+                    value = check_value(kind, value)
+                except (TypeError, ValueError) as error:
+                    raise ArgumentError(f"{field}: {error}", pou.loc) from error
+            posts.append((field, value))
+        frame = self._new_frame(pou)
+        context = Context(self._max_steps, self._max_call_depth, now_ms=self._now_ms)
+        try:
+            self._engine.initialize_owned(frame, context, init=arguments, posts=posts)
+        except ExecutionError:
+            self._faulted = True
+            raise
+        except RecursionError as error:
+            self._faulted = True
+            raise ExecutionError(
+                "Instance initialization nesting limit exceeded",
+                pou.loc,
+                tuple(context.stack) or (pou.name,),
+            ) from error
+        return FBHandle(self, frame)
+
+    @staticmethod
+    def _initialization_mapping(
+        values: Mapping[str, object] | None, pou: st.Pou
+    ) -> dict[str, object]:
+        if values is None:
+            return {}
+        if not isinstance(values, Mapping):
+            raise ArgumentError("Initialization arguments must be mappings", pou.loc)
+        normalized = {}
+        for name, value in values.items():
+            canonical = _name(name)
+            if canonical in normalized:
+                raise ArgumentError(f"Duplicate initialization argument {name}", pou.loc)
+            normalized[canonical] = value
+        return normalized
 
     def _new_frame(self, pou: st.Pou, method_owner: Frame | None = None) -> Frame:
         try:
@@ -157,7 +246,6 @@ class Runtime:
                 if method_owner is not None
                 else self._engine.new_frame(pou)
             )
-            self._engine.initialize_owned(frame)
             return frame
         except ExecutionError as error:
             self._faulted = True
@@ -400,6 +488,8 @@ class FBHandle:
         pou = self._runtime._registry.method_for(self._frame.pou.name, _name(name))
         if pou is None or pou.kind != "METHOD":
             raise ArgumentError(f"Unknown method {name}", self._frame.pou.loc)
+        if pou.result_name == "FB_INIT":
+            raise ArgumentError("Explicit FB_init calls are unsupported", pou.loc)
         if pou.access != "PUBLIC":
             raise ArgumentError(f"Cannot call {pou.access} method {name}", pou.loc)
         arguments = self._runtime._arguments(pou, inputs)

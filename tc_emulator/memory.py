@@ -322,6 +322,7 @@ class Frame:
     slots: dict[str, Cell | Frame | FBArray | InterfaceSlot | ReferenceSlot | None]
     lifetime: Lifetime = field(default_factory=Lifetime)
     initialized: bool = False
+    prepared: bool = False
     timer: TimerState | None = None
     standard: StandardBlockState | None = None
     method_owner: Frame | None = None

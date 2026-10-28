@@ -111,8 +111,13 @@ class Engine:
                     "Instance nesting limit exceeded", pou.loc, (pou.name,)
                 ) from error
 
-        for frame in (*self.global_frames.values(), *self.program_frames.values()):
-            self.initialize_owned(frame)
+    def initialize(self, ctx: Context) -> None:
+        """Prepare the complete persistent tree before any constructor runs."""
+        roots = (*self.global_frames.values(), *self.program_frames.values())
+        for frame in roots:
+            self.prepare_owned(frame, ctx)
+        for frame in roots:
+            self.initialize_owned(frame, ctx)
 
     def _variable(
         self, decl: st.VarDecl, lifetime: Lifetime | None = None
@@ -148,7 +153,7 @@ class Engine:
             {
                 decl.name: self._variable(decl, lifetime)
                 for decl in self.registry.variables_for(pou)
-                if decl.section != "VAR_INST"
+                if decl.section not in {"VAR_INST", "VAR_TEMP"}
             },
             lifetime=lifetime,
         )
@@ -179,36 +184,106 @@ class Engine:
         frame.slots.update(owner.method_instances.get(pou.name, {}))
         return frame
 
-    def initialize_storage(self, storage) -> None:
-        if isinstance(storage, Frame):
-            self.initialize_owned(storage)
-        elif isinstance(storage, FBArray):
-            for frame in storage.items:
-                self.initialize_owned(frame)
-
-    def initialize_owned(self, frame: Frame) -> None:
-        """Bind persistent declarations only after the entire owned tree exists."""
-        if frame.initialized:
-            return
-        frame.initialized = True
-        for decl in self.registry.variables_for(frame.pou):
-            if decl.section != "VAR_TEMP":
-                self.initialize_storage(frame.slots.get(decl.name))
+    def lexical_frames(self, frame: Frame):
         if frame.pou.kind == "FUNCTION_BLOCK":
             for owner in self.registry.lineages.get(frame.pou.name, (frame.pou.name,)):
-                lexical = Frame(
-                    self.registry[owner], {}, lifetime=frame.lifetime, method_owner=frame
-                )
-                self.initialize_references(lexical, {"VAR", "VAR_INPUT"})
-        elif frame.pou.kind in {"PROGRAM", "GVL"}:
-            self.initialize_references(frame, {"VAR", "VAR_INPUT"})
+                yield Frame(self.registry[owner], {}, lifetime=frame.lifetime, method_owner=frame)
+        else:
+            yield frame
+
+    @staticmethod
+    def storage_frames(storage) -> tuple[Frame, ...]:
+        return (
+            storage.items
+            if isinstance(storage, FBArray)
+            else (storage,)
+            if isinstance(storage, Frame)
+            else ()
+        )
+
+    def prepare_owned(self, frame: Frame, ctx: Context, *, supplied=()) -> None:
+        """Bind all references before running lifecycle code anywhere in this tree."""
+        if frame.prepared:
+            return
+        frame.prepared = True
+        for lexical in self.lexical_frames(frame):
+            self.initialize_references(lexical, {"VAR", "VAR_INPUT"}, ctx, supplied=supplied)
+        for decl in self.registry.variables_for(frame.pou):
+            if decl.section not in {"VAR_TEMP", "VAR_INST"}:
+                for child in self.storage_frames(frame.slots.get(decl.name)):
+                    self.prepare_owned(child, ctx)
         for method_name, slots in frame.method_instances.items():
             method = Frame(
                 self.registry[method_name], slots, lifetime=frame.lifetime, method_owner=frame
             )
+            self.initialize_references(method, {"VAR_INST"}, ctx)
             for storage in slots.values():
-                self.initialize_storage(storage)
-            self.initialize_references(method, {"VAR_INST"})
+                for child in self.storage_frames(storage):
+                    self.prepare_owned(child, ctx)
+
+    def setup_value(self, expr: st.Expr, kind: TypeSpec, scope: Frame, ctx: Context):
+        if isinstance(kind, ReferenceType):
+            return self.reference_value(expr, scope, ctx)
+        if isinstance(kind, InterfaceType):
+            return self.interface_value(expr, scope, ctx)
+        return self.expression(expr, scope, ctx)
+
+    def initialize_declaration(
+        self,
+        decl: st.VarDecl,
+        storage,
+        scope: Frame,
+        ctx: Context,
+    ) -> None:
+        setups = self.registry.instance_initializers.get((scope.pou.name, decl.name), ())
+        for child, (arguments, posts) in zip(self.storage_frames(storage), setups):
+            methods = self.registry.initialization_methods.get(child.pou.name, ())
+            formal = {var.name: var for var in methods[-1].variables} if methods else {}
+            inputs = {
+                name: self.setup_value(expr, formal[name].type_name, scope, ctx)
+                for name, expr in arguments
+            }
+            self.initialize_owned(child, ctx, init=inputs, posts=posts, scope=scope)
+
+    def initialize_owned(
+        self, frame: Frame, ctx: Context, *, init=None, posts=(), scope=None
+    ) -> None:
+        """Run children, static constructors, post assignments, then effective hooks."""
+        if frame.initialized:
+            return
+        self.prepare_owned(frame, ctx)
+        frame.initialized = True
+        for lexical in self.lexical_frames(frame):
+            for decl in lexical.pou.variables:
+                if decl.section not in {"VAR_TEMP", "VAR_INST"}:
+                    self.initialize_declaration(decl, frame.slots.get(decl.name), lexical, ctx)
+        for method_name, slots in frame.method_instances.items():
+            lexical = Frame(
+                self.registry[method_name], slots, lifetime=frame.lifetime, method_owner=frame
+            )
+            for decl in lexical.pou.variables:
+                if decl.section == "VAR_INST":
+                    self.initialize_declaration(decl, slots[decl.name], lexical, ctx)
+        for method in self.registry.initialization_methods.get(frame.pou.name, ()):
+            names = {var.name for var in method.variables if var.section == "VAR_INPUT"}
+            inputs = {name: value for name, value in (init or {}).items() if name in names}
+            inputs.update(BINITRETAINS=True, BINCOPYCODE=False)
+            self.invoke(self.new_method_frame(method, frame), inputs, ctx, method.loc)
+        for name, expression in posts:
+            prop = self.registry.properties.get((frame.pou.name, name))
+            target = frame.slots.get(name)
+            kind = prop.type_name if prop is not None else target.type_name
+            value = (
+                self.setup_value(expression, kind, scope, ctx) if scope is not None else expression
+            )
+            if prop is not None:
+                self.invoke_property(frame, prop.setter, ctx, prop.loc, value)
+            elif isinstance(target, (ReferenceSlot, InterfaceSlot)):
+                target.bind(value, frame.pou.loc)
+            else:
+                target._write(value, frame.pou.loc)
+        for method in self.registry.initialization_hooks.get(frame.pou.name, ()):
+            self.invoke(self.new_method_frame(method, frame), {}, ctx, method.loc)
 
     def initialize_references(
         self, frame: Frame, sections: set[str], ctx: Context | None = None, *, supplied=()
@@ -406,7 +481,6 @@ class Engine:
         ctx.stack.append(frame.pou.name)
         temporary_lifetime = Lifetime()
         try:
-            self.initialize_owned(persistent or frame)
             for decl in self.registry.variables_for(frame.pou):
                 if decl.section == "VAR_TEMP":
                     frame.slots[decl.name] = self._variable(decl, temporary_lifetime)
@@ -426,15 +500,23 @@ class Engine:
                     if not isinstance(target, Cell):
                         raise ExecutionError(f"Invalid input {name}", loc)
                     target._write(value, loc)
-            for decl in self.registry.variables_for(frame.pou):
-                if decl.section == "VAR_TEMP":
-                    self.initialize_storage(frame.slots[decl.name])
             sections = (
                 {"VAR_TEMP"}
                 if frame.pou.kind in {"FUNCTION_BLOCK", "PROGRAM"}
                 else {"VAR", "VAR_INPUT"}
             )
             self.initialize_references(frame, sections, ctx, supplied=inputs)
+            # Invocation inputs and reference declarations are ready for local children.
+            for decl in self.registry.variables_for(frame.pou):
+                if decl.section == "VAR_TEMP":
+                    for child in self.storage_frames(frame.slots[decl.name]):
+                        self.prepare_owned(child, ctx)
+            if persistent is None:
+                self.prepare_owned(frame, ctx, supplied=inputs)
+                self.initialize_owned(frame, ctx)
+            for decl in self.registry.variables_for(frame.pou):
+                if decl.section == "VAR_TEMP":
+                    self.initialize_declaration(decl, frame.slots[decl.name], frame, ctx)
             try:
                 if frame.timer is not None:
                     ctx.tick(loc)
